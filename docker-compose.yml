@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: travian-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - travian-data:/app/data  # Persistent storage dla SQLite
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - travian-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: travian-frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - travian-network
+    restart: unless-stopped
+
+networks:
+  travian-network:
+    driver: bridge
+
+volumes:
+  travian-data:  # Volume dla trwałego przechowywania bazy danych
+  frontend-node-modules:  # Volume dla node_modules frontendu
