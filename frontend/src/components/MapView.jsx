@@ -71,13 +71,27 @@ function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
     setViewCenter({ x: 0, y: 0 })
   }
 
-  // Scroll wheel zoom
+  // Scroll wheel zoom - blokuje scrollowanie strony
   const handleWheel = (e) => {
     e.preventDefault()
+    e.stopPropagation()
     const delta = e.deltaY
     const zoomFactor = delta > 0 ? 0.9 : 1.1
     setZoom(prev => Math.min(Math.max(prev * zoomFactor, 1), 10))
   }
+
+  // Dodaj native event listener aby wymusić preventDefault
+  useEffect(() => {
+    const svg = svgRef.current
+    if (svg) {
+      const wheelHandler = (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+      svg.addEventListener('wheel', wheelHandler, { passive: false })
+      return () => svg.removeEventListener('wheel', wheelHandler)
+    }
+  }, [])
 
   // Mouse drag to pan
   const handleMouseDown = (e) => {
@@ -317,7 +331,8 @@ function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
                 alignItems: 'center',
                 overflow: 'hidden',
                 position: 'relative',
-                cursor: isDragging ? 'grabbing' : (zoom > 1 ? 'grab' : 'default')
+                cursor: isDragging ? 'grabbing' : (zoom > 1 ? 'grab' : 'default'),
+                touchAction: 'none' // Blokuje standardowe gesty touch (scroll, pinch-zoom)
               }}>
                 <style>
                   {`
