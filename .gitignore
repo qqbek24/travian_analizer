@@ -46,3 +46,8 @@ logs/
 # OS
 Thumbs.db
 .DS_Store
+
+# vite
+frontend\.vite\
+.vite\
+
