@@ -1,5 +1,8 @@
 import { useState } from 'react'
 import axios from 'axios'
+import DeleteIcon from '@mui/icons-material/Delete'
+import DeleteSweepIcon from '@mui/icons-material/DeleteSweep'
+import RefreshIcon from '@mui/icons-material/Refresh'
 
 const API_URL = 'http://localhost:8000'
 
@@ -67,8 +70,42 @@ function Upload({ snapshots, setSnapshots, setSelectedSnapshot }) {
     } catch (error) {
       console.error('Błąd ładowania snapshot\'ów:', error)
     }
+  }  
+  const deleteSnapshot = async (snapshotName) => {
+    if (!window.confirm(`Czy na pewno chcesz usunąć snapshot "${snapshotName}"?`)) {
+      return
+    }
+    
+    try {
+      await axios.delete(`${API_URL}/snapshot/${snapshotName}`)
+      setMessage({ type: 'success', text: `Snapshot "${snapshotName}" został usunięty` })
+      loadSnapshots()
+      if (setSelectedSnapshot) {
+        setSelectedSnapshot(null)
+      }
+    } catch (error) {
+      console.error('Błąd usuwania snapshot:', error)
+      setMessage({ type: 'error', text: 'Błąd usuwania snapshot' })
+    }
   }
-
+  
+  const deleteAllSnapshots = async () => {
+    if (!window.confirm(`Czy na pewno chcesz usunąć WSZYSTKIE snapshoty (${snapshots.length})? Ta operacja jest nieodwracalna!`)) {
+      return
+    }
+    
+    try {
+      const response = await axios.delete(`${API_URL}/snapshots/all`)
+      setMessage({ type: 'success', text: response.data.message })
+      loadSnapshots()
+      if (setSelectedSnapshot) {
+        setSelectedSnapshot(null)
+      }
+    } catch (error) {
+      console.error('Błąd usuwania wszystkich snapshots:', error)
+      setMessage({ type: 'error', text: 'Błąd usuwania snapshots' })
+    }
+  }
   return (
     <div className="card">
       <h2>📤 Upload pliku SQL</h2>
@@ -120,11 +157,33 @@ function Upload({ snapshots, setSnapshots, setSelectedSnapshot }) {
       )}
 
       <div style={{ marginTop: '3rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ color: '#94a3b8' }}>Załadowane snapshoty:</h3>
-          <button className="btn" onClick={loadSnapshots} style={{ padding: '0.5rem 1rem' }}>
-            🔄 Odśwież
-          </button>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+          <h3 style={{ color: '#94a3b8', margin: 0 }}>Załadowane snapshoty:</h3>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button 
+              className="btn" 
+              onClick={loadSnapshots} 
+              style={{ padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+            >
+              <RefreshIcon sx={{ fontSize: 18 }} /> Odśwież
+            </button>
+            {snapshots.length > 0 && (
+              <button 
+                className="btn" 
+                onClick={deleteAllSnapshots}
+                style={{ 
+                  padding: '0.5rem 1rem', 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: '0.5rem',
+                  background: '#dc2626',
+                  borderColor: '#b91c1c'
+                }}
+              >
+                <DeleteSweepIcon sx={{ fontSize: 18 }} /> Usuń wszystkie
+              </button>
+            )}
+          </div>
         </div>
         
         {snapshots.length === 0 ? (
@@ -134,7 +193,30 @@ function Upload({ snapshots, setSnapshots, setSelectedSnapshot }) {
         ) : (
           <div className="grid" style={{ marginTop: '1.5rem' }}>
             {snapshots.map((snapshot) => (
-              <div key={snapshot.name} className="stat-card">
+              <div key={snapshot.name} className="stat-card" style={{ position: 'relative' }}>
+                <button
+                  onClick={() => deleteSnapshot(snapshot.name)}
+                  style={{
+                    position: 'absolute',
+                    top: '0.5rem',
+                    right: '0.5rem',
+                    background: '#dc2626',
+                    border: '1px solid #b91c1c',
+                    borderRadius: '0.25rem',
+                    padding: '0.25rem',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: 'white',
+                    transition: 'all 0.2s'
+                  }}
+                  onMouseEnter={(e) => e.target.style.background = '#b91c1c'}
+                  onMouseLeave={(e) => e.target.style.background = '#dc2626'}
+                  title="Usuń snapshot"
+                >
+                  <DeleteIcon sx={{ fontSize: 18 }} />
+                </button>
                 <h3>{snapshot.name}</h3>
                 <div style={{ marginTop: '0.5rem', color: '#cbd5e1' }}>
                   <p>🏰 Wioski: {snapshot.villages_count}</p>
