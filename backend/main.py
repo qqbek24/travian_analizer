@@ -1,11 +1,13 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import re
+import json
 from datetime import datetime
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from database import get_db, DBSnapshot, DBVillage
+from database import get_db, DBSnapshot, DBVillage, DBInactiveList
+from inactive_analyzer import compare_snapshots as analyze_inactive_players
 
 app = FastAPI(title="Travian Map Analyzer")
 
@@ -51,6 +53,36 @@ class ComparisonResult(BaseModel):
     old_data: Dict[str, Any]
     new_data: Dict[str, Any]
     growth: Dict[str, Any]
+
+class AnalyzeInactiveRequest(BaseModel):
+    old_snapshot: str
+    new_snapshot: str
+    center_x: Optional[int] = None
+    center_y: Optional[int] = None
+    radius: Optional[float] = None
+
+class InactiveListCreate(BaseModel):
+    name: str
+    old_snapshot: str
+    new_snapshot: str
+    center_x: Optional[int] = None
+    center_y: Optional[int] = None
+    radius: Optional[float] = None
+    data: Dict[str, Any]
+
+class InactiveListResponse(BaseModel):
+    id: int
+    name: str
+    created_at: datetime
+    old_snapshot_name: str
+    new_snapshot_name: str
+    center_x: Optional[int]
+    center_y: Optional[int]
+    radius: Optional[float]
+    data: Dict[str, Any]
+
+    class Config:
+        from_attributes = True
 
 # Helper functions
 def parse_sql_line(line: str) -> Village | None:
@@ -372,6 +404,164 @@ async def get_alliance_stats(snapshot_name: str, db: Session = Depends(get_db)):
     
     return {"alliances": sorted(result, key=lambda x: x["population"], reverse=True)}
 
+@app.delete("/snapshot/{snapshot_name}")
+async def delete_snapshot(snapshot_name: str, db: Session = Depends(get_db)):
+    """Usuń konkretny snapshot z bazy danych"""
+    snapshot = db.query(DBSnapshot).filter(DBSnapshot.name == snapshot_name).first()
+    
+    if not snapshot:
+        raise HTTPException(status_code=404, detail=f"Snapshot '{snapshot_name}' nie istnieje")
+    
+    db.delete(snapshot)
+    db.commit()
+    
+    return {
+        "message": f"Snapshot '{snapshot_name}' został usunięty",
+        "deleted_snapshot": snapshot_name
+    }
+
+@app.delete("/snapshots/all")
+async def delete_all_snapshots(db: Session = Depends(get_db)):
+    """Usuń wszystkie snapshoty z bazy danych"""
+    count = db.query(DBSnapshot).count()
+    
+    if count == 0:
+        return {"message": "Brak snapshotów do usunięcia", "deleted_count": 0}
+    
+    db.query(DBSnapshot).delete()
+    db.commit()
+    
+    return {
+        "message": f"Usunięto wszystkie snapshoty ({count})",
+        "deleted_count": count
+    }
+
+@app.post("/analyze/inactive")
+async def analyze_inactive(request: AnalyzeInactiveRequest, db: Session = Depends(get_db)):
+    """Analizuj nieaktywnych graczy między dwoma snapshotami (bez zapisywania)"""
+    # Sprawdź czy snapshoty istnieją
+    old_snapshot = db.query(DBSnapshot).filter(DBSnapshot.name == request.old_snapshot).first()
+    new_snapshot = db.query(DBSnapshot).filter(DBSnapshot.name == request.new_snapshot).first()
+    
+    if not old_snapshot:
+        raise HTTPException(status_code=404, detail=f"Snapshot '{request.old_snapshot}' nie istnieje")
+    if not new_snapshot:
+        raise HTTPException(status_code=404, detail=f"Snapshot '{request.new_snapshot}' nie istnieje")
+    
+    # Wykonaj analizę
+    result = analyze_inactive_players(
+        db,
+        request.old_snapshot,
+        request.new_snapshot,
+        request.center_x,
+        request.center_y,
+        request.radius
+    )
+    
+    return result
+
+@app.post("/inactive-lists", response_model=InactiveListResponse)
+async def create_inactive_list(request: InactiveListCreate, db: Session = Depends(get_db)):
+    """Zapisz wyniki analizy jako nazwaną listę"""
+    # Sprawdź czy nazwa nie jest zajęta
+    existing = db.query(DBInactiveList).filter(DBInactiveList.name == request.name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Lista o nazwie '{request.name}' już istnieje")
+    
+    # Zapisz listę
+    new_list = DBInactiveList(
+        name=request.name,
+        old_snapshot_name=request.old_snapshot,
+        new_snapshot_name=request.new_snapshot,
+        center_x=request.center_x,
+        center_y=request.center_y,
+        radius=request.radius,
+        data=json.dumps(request.data)
+    )
+    
+    db.add(new_list)
+    db.commit()
+    db.refresh(new_list)
+    
+    # Konwertuj data z JSON string na dict
+    response_data = new_list.__dict__.copy()
+    response_data['data'] = json.loads(new_list.data)
+    
+    return InactiveListResponse(**response_data)
+
+@app.get("/inactive-lists", response_model=List[InactiveListResponse])
+async def get_inactive_lists(db: Session = Depends(get_db)):
+    """Pobierz wszystkie zapisane listy nieaktywnych graczy"""
+    lists = db.query(DBInactiveList).order_by(DBInactiveList.created_at.desc()).all()
+    
+    result = []
+    for lst in lists:
+        response_data = lst.__dict__.copy()
+        response_data['data'] = json.loads(lst.data)
+        result.append(InactiveListResponse(**response_data))
+    
+    return result
+
+@app.get("/inactive-lists/{list_id}", response_model=InactiveListResponse)
+async def get_inactive_list(list_id: int, db: Session = Depends(get_db)):
+    """Pobierz konkretną listę nieaktywnych graczy"""
+    lst = db.query(DBInactiveList).filter(DBInactiveList.id == list_id).first()
+    
+    if not lst:
+        raise HTTPException(status_code=404, detail=f"Lista o ID {list_id} nie istnieje")
+    
+    response_data = lst.__dict__.copy()
+    response_data['data'] = json.loads(lst.data)
+    
+    return InactiveListResponse(**response_data)
+
+@app.post("/inactive-lists/{list_id}/check")
+async def recheck_inactive_list(list_id: int, new_snapshot: str, db: Session = Depends(get_db)):
+    """Sprawdź ponownie zapisaną listę z nowym snapshotem"""
+    # Pobierz listę
+    lst = db.query(DBInactiveList).filter(DBInactiveList.id == list_id).first()
+    if not lst:
+        raise HTTPException(status_code=404, detail=f"Lista o ID {list_id} nie istnieje")
+    
+    # Sprawdź czy nowy snapshot istnieje
+    snapshot = db.query(DBSnapshot).filter(DBSnapshot.name == new_snapshot).first()
+    if not snapshot:
+        raise HTTPException(status_code=404, detail=f"Snapshot '{new_snapshot}' nie istnieje")
+    
+    # Wykonaj analizę z tymi samymi parametrami ale nowym snapshotem
+    result = analyze_inactive_players(
+        db,
+        lst.new_snapshot_name,  # Poprzedni "nowy" staje się "starym"
+        new_snapshot,
+        lst.center_x,
+        lst.center_y,
+        lst.radius
+    )
+    
+    return {
+        "list_name": lst.name,
+        "old_snapshot": lst.new_snapshot_name,
+        "new_snapshot": new_snapshot,
+        "analysis": result
+    }
+
+@app.delete("/inactive-lists/{list_id}")
+async def delete_inactive_list(list_id: int, db: Session = Depends(get_db)):
+    """Usuń zapisaną listę nieaktywnych graczy"""
+    lst = db.query(DBInactiveList).filter(DBInactiveList.id == list_id).first()
+    
+    if not lst:
+        raise HTTPException(status_code=404, detail=f"Lista o ID {list_id} nie istnieje")
+    
+    list_name = lst.name
+    db.delete(lst)
+    db.commit()
+    
+    return {
+        "message": f"Lista '{list_name}' została usunięta",
+        "deleted_id": list_id
+    }
+
 @app.get("/")
 async def root():
     return {
@@ -385,7 +575,15 @@ async def root():
             "GET /player/{snapshot_name}/{player_name} - Player stats",
             "GET /players/{snapshot_name} - Top players",
             "POST /compare - Compare snapshots",
-            "GET /alliances/{snapshot_name} - Alliance stats"
+            "GET /alliances/{snapshot_name} - Alliance stats",
+            "DELETE /snapshot/{snapshot_name} - Delete specific snapshot",
+            "DELETE /snapshots/all - Delete all snapshots",
+            "POST /analyze/inactive - Analyze inactive players",
+            "POST /inactive-lists - Save inactive list",
+            "GET /inactive-lists - Get all inactive lists",
+            "GET /inactive-lists/{id} - Get specific inactive list",
+            "POST /inactive-lists/{id}/check - Recheck list with new snapshot",
+            "DELETE /inactive-lists/{id} - Delete inactive list"
         ]
     }
 

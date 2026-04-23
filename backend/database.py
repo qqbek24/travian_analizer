@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
 from typing import List
@@ -51,6 +51,20 @@ class DBVillage(Base):
     wonder = Column(Integer)
     
     snapshot = relationship("DBSnapshot", back_populates="villages")
+
+class DBInactiveList(Base):
+    """Zapisana lista nieaktywnych graczy"""
+    __tablename__ = "inactive_lists"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)  # Nazwa listy nadana przez użytkownika
+    created_at = Column(String)
+    old_snapshot_name = Column(String)  # Starszy snapshot
+    new_snapshot_name = Column(String)  # Nowszy snapshot
+    center_x = Column(Integer, nullable=True)  # Środek promienia (opcjonalny)
+    center_y = Column(Integer, nullable=True)
+    radius = Column(Float, nullable=True)  # Promień wyszukiwania
+    data = Column(Text)  # JSON z wynikami analizy
 
 # Create tables
 Base.metadata.create_all(bind=engine)

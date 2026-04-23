@@ -7,6 +7,7 @@ import Dashboard from './components/Dashboard'
 import PlayerStats from './components/PlayerStats'
 import PlayerList from './components/PlayerList'
 import Comparison from './components/Comparison'
+import InactivePlayers from './components/InactivePlayers'
 
 function App() {
   const [snapshots, setSnapshots] = useState([])
@@ -26,6 +27,7 @@ function App() {
             <Link to="/player">Gracz</Link>
             <Link to="/players">Lista Graczy</Link>
             <Link to="/compare">Porównaj</Link>
+            <Link to="/inactive">Nieaktywni</Link>
           </div>
         </nav>
 
@@ -69,6 +71,9 @@ function App() {
               <Comparison 
                 snapshots={snapshots}
               />
+            } />
+            <Route path="/inactive" element={
+              <InactivePlayers />
             } />
           </Routes>
         </main>
