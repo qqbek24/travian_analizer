@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import {
   Box,
@@ -42,10 +42,82 @@ import {
   Map as MapIcon,
   Info as InfoIcon,
   ArrowUpward as ArrowUpwardIcon,
-  ArrowDownward as ArrowDownwardIcon
+  ArrowDownward as ArrowDownwardIcon,
+  ContentCopy as ContentCopyIcon
 } from '@mui/icons-material';
 
 const API_URL = "http://localhost:8000";
+
+function SaveListDialog({ open, onClose, onSave }) {
+  const [name, setName] = useState('');
+
+  const handleSave = () => {
+    onSave(name);
+    setName('');
+  };
+
+  const handleClose = () => {
+    setName('');
+    onClose();
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onClose={handleClose}
+      PaperProps={{
+        sx: {
+          backgroundColor: '#1e293b',
+          backgroundImage: 'none',
+          borderRadius: '0.75rem'
+        }
+      }}
+    >
+      <DialogTitle sx={{ color: '#e2e8f0', fontWeight: 600 }}>
+        Zapisz listę
+      </DialogTitle>
+      <DialogContent>
+        <TextField
+          autoFocus
+          label="Nazwa listy"
+          fullWidth
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSave()}
+          sx={{
+            mt: 2,
+            '& .MuiInputLabel-root': { color: '#94a3b8' },
+            '& .MuiInputBase-root': {
+              color: '#e2e8f0',
+              backgroundColor: '#0f172a'
+            },
+            '& .MuiOutlinedInput-notchedOutline': { borderColor: '#334155' },
+            '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#60a5fa' },
+            '& .Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#3b82f6' }
+          }}
+        />
+        <Typography variant="caption" sx={{ color: '#94a3b8', display: 'block', mt: 1 }}>
+          Zostaną zapisane tylko zaznaczone rekordy
+        </Typography>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={handleClose} sx={{ color: '#94a3b8' }}>
+          Anuluj
+        </Button>
+        <Button
+          onClick={handleSave}
+          variant="contained"
+          sx={{
+            backgroundColor: '#3b82f6',
+            '&:hover': { backgroundColor: '#2563eb' }
+          }}
+        >
+          Zapisz
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
 
 function InactivePlayers() {
   const [snapshots, setSnapshots] = useState([]);
@@ -60,8 +132,8 @@ function InactivePlayers() {
   const [savedLists, setSavedLists] = useState([]);
   const [activeTab, setActiveTab] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [excludeSaved, setExcludeSaved] = useState(false);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
-  const [listName, setListName] = useState('');
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
   const [selectedList, setSelectedList] = useState(null);
   
@@ -140,7 +212,8 @@ function InactivePlayers() {
     try {
       const payload = {
         old_snapshot: oldSnapshot,
-        new_snapshot: newSnapshot
+        new_snapshot: newSnapshot,
+        exclude_saved: excludeSaved
       };
 
       if (centerX && centerY && radius) {
@@ -159,7 +232,7 @@ function InactivePlayers() {
     }
   };
 
-  const saveList = async () => {
+  const saveList = async (listName) => {
     if (!listName.trim()) {
       showSnackbar('Podaj nazwę listy', 'warning');
       return;
@@ -221,7 +294,6 @@ function InactivePlayers() {
       await axios.post(`${API_URL}/inactive-lists`, payload);
       showSnackbar('Lista zapisana pomyślnie', 'success');
       setSaveDialogOpen(false);
-      setListName('');
       loadSavedLists();
     } catch (error) {
       showSnackbar(error.response?.data?.detail || 'Błąd podczas zapisywania listy', 'error');
@@ -261,25 +333,91 @@ function InactivePlayers() {
     }
   };
 
-  const recheckList = async (listId) => {
-    if (!newSnapshot) {
-      showSnackbar('Wybierz nowy snapshot do sprawdzenia', 'warning');
+  const deleteEntryFromList = async (tabKey, originalIndex) => {
+    const tabDataKeys = {
+      inactive: 'inactive_players',
+      disappeared_players: 'disappeared_players',
+      disappeared_villages: 'disappeared_villages',
+      owner_changes: 'owner_changes',
+      population_drops: 'population_drops'
+    };
+    const summaryKeys = {
+      inactive: 'inactive_count',
+      disappeared_players: 'disappeared_players_count',
+      disappeared_villages: 'disappeared_villages_count',
+      owner_changes: 'owner_changes_count',
+      population_drops: 'population_drops_count'
+    };
+    const dataKey = tabDataKeys[tabKey];
+    const summaryKey = summaryKeys[tabKey];
+
+    const currentList = analysisResults[dataKey] || [];
+    const updatedList = currentList.filter((_, i) => i !== originalIndex);
+
+    const updatedResults = {
+      ...analysisResults,
+      [dataKey]: updatedList,
+      summary: {
+        ...analysisResults.summary,
+        [summaryKey]: updatedList.length
+      }
+    };
+
+    const prevResults = analysisResults;
+    setAnalysisResults(updatedResults);
+
+    try {
+      await axios.patch(`${API_URL}/inactive-lists/${selectedList.id}`, { data: updatedResults });
+      showSnackbar('Wpis usunięty z listy', 'success');
+      loadSavedLists();
+    } catch (error) {
+      setAnalysisResults(prevResults);
+      showSnackbar('Błąd podczas usuwania wpisu', 'error');
+    }
+  };
+
+  const recheckList = async (listId, listCurrentNewSnapshot) => {
+    // Znajdź najnowszy snapshot nowszy niż ten zapisany na liście
+    const newerSnapshots = snapshots
+      .filter(s => s.name > listCurrentNewSnapshot)
+      .sort((a, b) => b.name.localeCompare(a.name));
+
+    if (newerSnapshots.length === 0) {
+      showSnackbar('Brak nowszego snapshotu — wgraj nowy plik mapy, żeby sprawdzić ponownie', 'warning');
       return;
     }
 
+    const latestSnapshot = newerSnapshots[0].name;
     setLoading(true);
     try {
       const response = await axios.post(`${API_URL}/inactive-lists/${listId}/check`, null, {
-        params: { new_snapshot: newSnapshot }
+        params: { new_snapshot: latestSnapshot }
       });
       setAnalysisResults(response.data.analysis);
-      showSnackbar('Lista sprawdzona ponownie', 'success');
+      setNewSnapshot(latestSnapshot);
+      showSnackbar(`Sprawdzono ponownie: ${listCurrentNewSnapshot.slice(0,10)} → ${latestSnapshot.slice(0,10)}`, 'success');
     } catch (error) {
       showSnackbar('Błąd podczas sprawdzania listy', 'error');
     } finally {
       setLoading(false);
     }
   };
+
+  // Memoized sorted data for current tab (avoids re-sorting on every keystroke)
+  const sortedCurrentData = useMemo(() => {
+    if (!analysisResults) return [];
+    const tabDataKeys = ['inactive_players', 'disappeared_players', 'disappeared_villages', 'owner_changes', 'population_drops'];
+    const data = analysisResults[tabDataKeys[activeTab]] || [];
+    const stabilized = data.map((el, index) => [el, index]);
+    const comparator = order === 'desc'
+      ? (a, b) => { if (b[orderBy] < a[orderBy]) return -1; if (b[orderBy] > a[orderBy]) return 1; return 0; }
+      : (a, b) => { if (b[orderBy] < a[orderBy]) return 1; if (b[orderBy] > a[orderBy]) return -1; return 0; };
+    stabilized.sort((a, b) => {
+      const cmp = comparator(a[0], b[0]);
+      return cmp !== 0 ? cmp : a[1] - b[1];
+    });
+    return stabilized.map(([item, originalIndex]) => ({ item, originalIndex }));
+  }, [analysisResults, activeTab, order, orderBy]);
 
   // Funkcje sortowania
   const handleRequestSort = (property) => {
@@ -356,6 +494,30 @@ function InactivePlayers() {
 
   const isSelected = (tabKey, index) => selectedRows[tabKey].indexOf(index) !== -1;
 
+  const copyCoords = (e, x, y) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(`${x}|${y}`);
+    showSnackbar(`Skopiowano: ${x}|${y}`, 'info');
+  };
+
+  const renderCoordChip = (x, y) => (
+    <Chip
+      label={`${x}|${y}`}
+      size="small"
+      icon={<ContentCopyIcon sx={{ fontSize: '0.75rem !important' }} />}
+      onClick={(e) => copyCoords(e, x, y)}
+      sx={{
+        cursor: 'pointer',
+        fontSize: '0.75rem',
+        color: '#60a5fa',
+        backgroundColor: 'rgba(59, 130, 246, 0.15)',
+        border: '1px solid rgba(59, 130, 246, 0.3)',
+        '&:hover': { backgroundColor: 'rgba(59, 130, 246, 0.3)' },
+        '& .MuiChip-icon': { color: '#60a5fa' }
+      }}
+    />
+  );
+
   const renderTable = (data, columns, tabKey) => {
     if (!data || data.length === 0) {
       return (
@@ -365,7 +527,7 @@ function InactivePlayers() {
       );
     }
 
-    const sortedData = sortData(data, getComparator(order, orderBy));
+    const sortedData = sortedCurrentData;
     const numSelected = selectedRows[tabKey].length;
     const rowCount = data.length;
 
@@ -422,10 +584,13 @@ function InactivePlayers() {
                   )}
                 </TableCell>
               ))}
+              {selectedList && (
+                <TableCell sx={{ borderBottom: '1px solid #334155', width: 48 }} />
+              )}
             </TableRow>
           </TableHead>
           <TableBody>
-            {sortedData.map((row, idx) => {
+            {sortedData.map(({ item: row, originalIndex }, idx) => {
               const isItemSelected = isSelected(tabKey, idx);
               return (
                 <TableRow 
@@ -461,6 +626,17 @@ function InactivePlayers() {
                       {col.render ? col.render(row) : row[col.field]}
                     </TableCell>
                   ))}
+                  {selectedList && (
+                    <TableCell padding="none" align="center" sx={{ borderBottom: '1px solid #334155', width: 48 }}>
+                      <IconButton
+                        size="small"
+                        onClick={(e) => { e.stopPropagation(); deleteEntryFromList(tabKey, originalIndex); }}
+                        sx={{ color: '#ef4444', '&:hover': { backgroundColor: 'rgba(239, 68, 68, 0.1)' } }}
+                      >
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </TableCell>
+                  )}
                 </TableRow>
               );
             })}
@@ -491,7 +667,36 @@ function InactivePlayers() {
           { label: 'Sojusz', field: 'alliance' },
           { label: 'Wioski', field: 'villages_count' },
           { label: 'Pop. (1)', field: 'old_population' },
-          { label: 'Pop. (2)', field: 'new_population' }
+          { label: 'Pop. (2)', field: 'new_population' },
+          {
+            label: 'Koordynaty',
+            render: (row) => {
+              const first = row.villages?.[0];
+              if (!first) return '-';
+              return (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
+                  {renderCoordChip(first.x, first.y)}
+                  {row.villages?.length > 1 && (
+                    <Typography variant="caption" sx={{ color: '#94a3b8' }}>
+                      +{row.villages.length - 1}
+                    </Typography>
+                  )}
+                </Box>
+              );
+            }
+          },
+          {
+            label: 'Pierwsze pojawienie',
+            render: (row) => {
+              if (!row.first_seen) return '-';
+              const date = row.first_seen.split('T')[0];
+              return (
+                <Typography variant="caption" sx={{ color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                  {date}
+                </Typography>
+              );
+            }
+          }
         ], analysisResults.inactive_players)
       },
       {
@@ -502,7 +707,36 @@ function InactivePlayers() {
           { label: 'Gracz', field: 'player_name' },
           { label: 'Sojusz', field: 'alliance' },
           { label: 'Wioski (stare)', field: 'old_villages_count' },
-          { label: 'Populacja (stara)', field: 'old_total_population' }
+          { label: 'Populacja (stara)', field: 'old_total_population' },
+          {
+            label: 'Koordynaty',
+            render: (row) => {
+              const first = row.villages?.[0];
+              if (!first) return '-';
+              return (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
+                  {renderCoordChip(first.x, first.y)}
+                  {row.villages?.length > 1 && (
+                    <Typography variant="caption" sx={{ color: '#94a3b8' }}>
+                      +{row.villages.length - 1}
+                    </Typography>
+                  )}
+                </Box>
+              );
+            }
+          },
+          {
+            label: 'Pierwsze pojawienie',
+            render: (row) => {
+              if (!row.first_seen) return '-';
+              const date = row.first_seen.split('T')[0];
+              return (
+                <Typography variant="caption" sx={{ color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                  {date}
+                </Typography>
+              );
+            }
+          }
         ], analysisResults.disappeared_players)
       },
       {
@@ -814,6 +1048,18 @@ function InactivePlayers() {
               </Grid>
 
               <Grid item xs={12}>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                  <Checkbox
+                    checked={excludeSaved}
+                    onChange={(e) => setExcludeSaved(e.target.checked)}
+                    sx={{ color: '#64748b', '&.Mui-checked': { color: '#3b82f6' }, p: 0.5 }}
+                  />
+                  <Typography variant="body2" sx={{ color: '#94a3b8', ml: 0.5 }}>
+                    Pomiń graczy już zapisanych na listach
+                  </Typography>
+                </Box>
+              </Grid>
+              <Grid item xs={12}>
                 <Button
                   variant="contained"
                   onClick={analyzeInactive}
@@ -882,7 +1128,7 @@ function InactivePlayers() {
                         {list.old_snapshot_name} → {list.new_snapshot_name}
                       </Typography>
                       <Typography variant="caption" sx={{ color: '#64748b' }}>
-                        {new Date(list.created_at).toLocaleString('pl-PL')}
+                        {list.created_at ? new Date(list.created_at).toLocaleString('pl-PL') : '—'}
                       </Typography>
                       {list.radius && (
                         <Chip
@@ -910,7 +1156,7 @@ function InactivePlayers() {
                       </Button>
                       <Button
                         size="small"
-                        onClick={() => recheckList(list.id)}
+                        onClick={() => recheckList(list.id, list.new_snapshot_name)}
                         disabled={!newSnapshot}
                         sx={{ 
                           color: '#60a5fa',
@@ -946,62 +1192,11 @@ function InactivePlayers() {
       </Grid>
 
       {/* Dialog zapisu */}
-      <Dialog 
-        open={saveDialogOpen} 
+      <SaveListDialog
+        open={saveDialogOpen}
         onClose={() => setSaveDialogOpen(false)}
-        PaperProps={{
-          sx: {
-            backgroundColor: '#1e293b',
-            backgroundImage: 'none',
-            borderRadius: '0.75rem'
-          }
-        }}
-      >
-        <DialogTitle sx={{ color: '#e2e8f0', fontWeight: 600 }}>
-          Zapisz listę
-        </DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            label="Nazwa listy"
-            fullWidth
-            value={listName}
-            onChange={(e) => setListName(e.target.value)}
-            sx={{ 
-              mt: 2,
-              '& .MuiInputLabel-root': { color: '#94a3b8' },
-              '& .MuiInputBase-root': { 
-                color: '#e2e8f0',
-                backgroundColor: '#0f172a'
-              },
-              '& .MuiOutlinedInput-notchedOutline': { borderColor: '#334155' },
-              '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#60a5fa' },
-              '& .Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#3b82f6' }
-            }}
-          />
-          <Typography variant="caption" sx={{ color: '#94a3b8', display: 'block', mt: 1 }}>
-            Zostaną zapisane tylko zaznaczone rekordy
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button 
-            onClick={() => setSaveDialogOpen(false)}
-            sx={{ color: '#94a3b8' }}
-          >
-            Anuluj
-          </Button>
-          <Button 
-            onClick={saveList} 
-            variant="contained"
-            sx={{
-              backgroundColor: '#3b82f6',
-              '&:hover': { backgroundColor: '#2563eb' }
-            }}
-          >
-            Zapisz
-          </Button>
-        </DialogActions>
-      </Dialog>
+        onSave={saveList}
+      />
 
       {/* Snackbar */}
       <Snackbar

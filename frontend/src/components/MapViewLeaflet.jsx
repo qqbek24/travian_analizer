@@ -64,7 +64,9 @@ function MapUpdater({ center, zoom }) {
   return null
 }
 
-const MapViewLeaflet = memo(function MapViewLeaflet({ mapData, filterPlayer, filterAlliance, zoom, setZoom, viewCenter, setViewCenter }) {
+const PALETTE = ['#f97316','#06b6d4','#a855f7','#84cc16','#ec4899','#14b8a6','#e879f9','#facc15','#3b82f6','#22c55e']
+
+const MapViewLeaflet = memo(function MapViewLeaflet({ mapData, filterPlayers = [], filterAlliances = [], hoveredTag = null, zoom, setZoom, viewCenter, setViewCenter }) {
   const leafletCenter = useMemo(() => [viewCenter.y, viewCenter.x], [viewCenter])
   const leafletZoom = useMemo(() => Math.max(1, Math.min(5, 3 + (zoom - 1) * 0.5)), [zoom])
   
@@ -73,31 +75,37 @@ const MapViewLeaflet = memo(function MapViewLeaflet({ mapData, filterPlayer, fil
     setViewCenter({ x: 0, y: 0 })
   }
 
-  const { normalVillages, highlightedVillages } = useMemo(() => {
-    if (!mapData?.villages) return { normalVillages: [], highlightedVillages: [] }
+  const { normalVillages, taggedVillages } = useMemo(() => {
+    if (!mapData?.villages) return { normalVillages: [], taggedVillages: [] }
 
-    const filterPlayerLower = filterPlayer?.toLowerCase() || ''
-    const filterAllianceLower = filterAlliance?.toLowerCase() || ''
+    const playerTagsLower = filterPlayers.map(t => t.toLowerCase())
+    const allianceTagsLower = filterAlliances.map(t => t.toLowerCase())
+    const hasFilters = playerTagsLower.length > 0 || allianceTagsLower.length > 0
 
     const normal = []
-    const highlighted = []
+    const tagged = []
 
     mapData.villages.forEach(village => {
-      if (filterAllianceLower && !village.alliance.toLowerCase().includes(filterAllianceLower)) {
+      const ownerL = village.owner.toLowerCase()
+      const allianceL = village.alliance.toLowerCase()
+
+      const playerIdx = playerTagsLower.findIndex(t => ownerL.includes(t))
+      if (playerIdx !== -1) {
+        tagged.push({ ...village, tagColor: PALETTE[(filterAlliances.length + playerIdx) % PALETTE.length], tagType: 'player', tagLabel: filterPlayers[playerIdx] })
         return
       }
 
-      const isPlayerMatch = filterPlayerLower && village.owner.toLowerCase().includes(filterPlayerLower)
-      
-      if (isPlayerMatch) {
-        highlighted.push(village)
-      } else {
-        normal.push(village)
+      const allianceIdx = allianceTagsLower.findIndex(t => allianceL.includes(t))
+      if (allianceIdx !== -1) {
+        tagged.push({ ...village, tagColor: PALETTE[allianceIdx % PALETTE.length], tagType: 'alliance', tagLabel: filterAlliances[allianceIdx] })
+        return
       }
+
+      if (!hasFilters) normal.push(village)
     })
 
-    return { normalVillages: normal, highlightedVillages: highlighted }
-  }, [mapData, filterPlayer, filterAlliance])
+    return { normalVillages: normal, taggedVillages: tagged }
+  }, [mapData, filterPlayers, filterAlliances])
 
   return (
     <div style={{ 
@@ -196,28 +204,33 @@ const MapViewLeaflet = memo(function MapViewLeaflet({ mapData, filterPlayer, fil
           )
         })}
 
-        {/* Highlighted villages */}
-        {highlightedVillages.map((village, idx) => {
-          const fillColor = village.is_capital ? '#fbbf24' : '#3b82f6'
-          const radius = Math.min(8, Math.max(3, village.population / 100))
-          
+        {/* Alliance & player tagged villages */}
+        {taggedVillages.map((village) => {
+          const isHovered = hoveredTag && village.tagType === hoveredTag.type && village.tagLabel === hoveredTag.label
+          const radius = Math.min(8, Math.max(3, village.population / 100)) * (isHovered ? 1.5 : 1)
+          const isPlayer = village.tagType === 'player'
+          const fillColor = isHovered ? '#ef4444' : village.tagColor
+          const strokeColor = isHovered ? '#ffffff' : (village.is_capital ? '#fbbf24' : village.tagColor)
+          const strokeWeight = isHovered ? 2 : (isPlayer ? 3 : 1.5)
+          const fillOpacity = isHovered ? 1 : (hoveredTag ? 0.25 : 0.95)
+
           return (
             <CircleMarker
-              key={`highlighted-${village.x}-${village.y}`}
+              key={`tagged-${village.x}-${village.y}`}
               center={[village.y, village.x]}
               radius={radius}
               pathOptions={{
-                fillColor: fillColor,
-                fillOpacity: 0.9,
-                color: '#dc2626',
-                weight: 3,
-                opacity: 1
+                fillColor,
+                fillOpacity,
+                color: strokeColor,
+                weight: strokeWeight,
+                opacity: isHovered ? 1 : (hoveredTag ? 0.3 : 1)
               }}
-              className="leaflet-pulsing-marker"
+              className={isPlayer && !isHovered ? 'leaflet-pulsing-marker' : (isHovered ? 'leaflet-hovered-marker' : '')}
             >
               <Tooltip direction="top" offset={[0, -10]} opacity={0.95}>
                 <div style={{ fontSize: '0.875rem' }}>
-                  <strong style={{ color: '#dc2626' }}>🔴 {village.name}</strong> ({village.x}|{village.y})<br />
+                  <strong style={{ color: village.tagColor }}>[{village.tagLabel}] {village.name}</strong> ({village.x}|{village.y})<br />
                   {village.owner} {village.alliance ? `[${village.alliance}]` : ''}<br />
                   Pop: {village.population}
                   {village.is_capital && <> 👑</>}
@@ -225,7 +238,7 @@ const MapViewLeaflet = memo(function MapViewLeaflet({ mapData, filterPlayer, fil
               </Tooltip>
               <Popup>
                 <div style={{ color: '#0f172a' }}>
-                  <strong style={{ color: '#dc2626' }}>🔴 {village.name}</strong><br />
+                  <strong>[{village.tagLabel}] {village.name}</strong><br />
                   Współrzędne: ({village.x}|{village.y})<br />
                   Właściciel: {village.owner}<br />
                   {village.alliance && <>Sojusz: [{village.alliance}]<br /></>}
@@ -243,16 +256,25 @@ const MapViewLeaflet = memo(function MapViewLeaflet({ mapData, filterPlayer, fil
         {`
           @keyframes leaflet-pulse {
             0%, 100% {
+              stroke: #16a34a;
               stroke-width: 3;
               stroke-opacity: 1;
             }
             50% {
+              stroke: #4ade80;
               stroke-width: 5;
               stroke-opacity: 0.7;
             }
           }
           .leaflet-pulsing-marker {
             animation: leaflet-pulse 1.5s ease-in-out infinite;
+          }
+          @keyframes leaflet-hover-pulse {
+            0%, 100% { stroke-opacity: 1; stroke-width: 2; }
+            50% { stroke-opacity: 0.3; stroke-width: 6; }
+          }
+          .leaflet-hovered-marker {
+            animation: leaflet-hover-pulse 0.6s ease-in-out infinite;
           }
         `}
       </style>

@@ -4,13 +4,14 @@ import axios from 'axios'
 const API_URL = 'http://localhost:8000'
 
 function PlayerStats({ selectedSnapshot, snapshots }) {
+  const [localSnapshot, setLocalSnapshot] = useState(selectedSnapshot || '')
   const [playerName, setPlayerName] = useState('')
   const [playerData, setPlayerData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
   const loadPlayerStats = async () => {
-    if (!playerName || !selectedSnapshot) {
+    if (!playerName || !localSnapshot) {
       setError('Wybierz snapshot i podaj nazwę gracza')
       return
     }
@@ -19,7 +20,7 @@ function PlayerStats({ selectedSnapshot, snapshots }) {
     setError(null)
     
     try {
-      const response = await axios.get(`${API_URL}/player/${selectedSnapshot}/${encodeURIComponent(playerName)}`)
+      const response = await axios.get(`${API_URL}/player/${localSnapshot}/${encodeURIComponent(playerName)}`)
       setPlayerData(response.data)
     } catch (err) {
       setError(err.response?.data?.detail || 'Gracz nie znaleziony')
@@ -38,7 +39,11 @@ function PlayerStats({ selectedSnapshot, snapshots }) {
           <label style={{ display: 'block', marginBottom: '0.5rem', color: '#94a3b8' }}>
             Snapshot:
           </label>
-          <select className="select" defaultValue={selectedSnapshot}>
+          <select
+            className="select"
+            value={localSnapshot}
+            onChange={(e) => setLocalSnapshot(e.target.value)}
+          >
             <option value="">-- Wybierz snapshot --</option>
             {snapshots.map(s => (
               <option key={s.name} value={s.name}>{s.name}</option>
@@ -63,7 +68,7 @@ function PlayerStats({ selectedSnapshot, snapshots }) {
       <button 
         className="btn" 
         onClick={loadPlayerStats}
-        disabled={loading || !playerName || !selectedSnapshot}
+        disabled={loading || !playerName || !localSnapshot}
         style={{ marginTop: '1rem' }}
       >
         {loading ? 'Ładowanie...' : 'Szukaj'}

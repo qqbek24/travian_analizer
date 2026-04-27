@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback, memo } from 'react'
 
-const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayer, filterAlliance, zoom, setZoom, viewCenter, setViewCenter }) {
+const PALETTE = ['#f97316','#06b6d4','#a855f7','#84cc16','#ec4899','#14b8a6','#e879f9','#facc15','#3b82f6','#22c55e']
+
+const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayers = [], filterAlliances = [], hoveredTag = null, zoom, setZoom, viewCenter, setViewCenter }) {
   const canvasRef = useRef(null)
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
@@ -95,19 +97,35 @@ const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayer, filte
     ctx.textAlign = 'left'
     ctx.globalAlpha = 1
 
-    // Filter villages
-    const filterPlayerLower = filterPlayer?.toLowerCase() || ''
-    const filterAllianceLower = filterAlliance?.toLowerCase() || ''
+    // Classify villages with multi-tag support
+    const playerTagsLower = filterPlayers.map(t => t.toLowerCase())
+    const allianceTagsLower = filterAlliances.map(t => t.toLowerCase())
+    const hasFilters = playerTagsLower.length > 0 || allianceTagsLower.length > 0
 
-    // Draw normal villages
+    const normalVillages = []
+    const taggedVillages = []
+
     mapData.villages.forEach(village => {
-      if (filterAllianceLower && !village.alliance.toLowerCase().includes(filterAllianceLower)) {
+      const ownerL = village.owner.toLowerCase()
+      const allianceL = village.alliance.toLowerCase()
+
+      const playerIdx = playerTagsLower.findIndex(t => ownerL.includes(t))
+      if (playerIdx !== -1) {
+        taggedVillages.push({ ...village, tagColor: PALETTE[(filterAlliances.length + playerIdx) % PALETTE.length], tagType: 'player', tagLabel: filterPlayers[playerIdx] })
         return
       }
 
-      const isHighlighted = filterPlayerLower && village.owner.toLowerCase().includes(filterPlayerLower)
-      if (isHighlighted) return // Draw highlighted later
+      const allianceIdx = allianceTagsLower.findIndex(t => allianceL.includes(t))
+      if (allianceIdx !== -1) {
+        taggedVillages.push({ ...village, tagColor: PALETTE[allianceIdx % PALETTE.length], tagType: 'alliance', tagLabel: filterAlliances[allianceIdx] })
+        return
+      }
 
+      if (!hasFilters) normalVillages.push(village)
+    })
+
+    // Draw normal villages (blue/gold)
+    normalVillages.forEach(village => {
       const x = coordToPixel(village.x)
       const y = coordToPixel(village.y, true)
       const color = village.is_capital ? '#fbbf24' : '#3b82f6'
@@ -121,39 +139,75 @@ const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayer, filte
       ctx.fill()
     })
 
-    // Draw highlighted villages
-    mapData.villages.forEach(village => {
-      if (filterAllianceLower && !village.alliance.toLowerCase().includes(filterAllianceLower)) {
-        return
-      }
-
-      const isHighlighted = filterPlayerLower && village.owner.toLowerCase().includes(filterPlayerLower)
-      if (!isHighlighted) return
-
+    // Draw tagged villages (alliance = square marker, player = circle + ring)
+    taggedVillages.forEach(village => {
       const x = coordToPixel(village.x)
       const y = coordToPixel(village.y, true)
-      const fillColor = village.is_capital ? '#fbbf24' : '#3b82f6'
       const baseSize = Math.min(8, Math.max(3, village.population / 100))
       const size = baseSize / zoom
 
-      // Main circle
-      ctx.fillStyle = fillColor
-      ctx.globalAlpha = 0.9
-      ctx.beginPath()
-      ctx.arc(x, y, size, 0, Math.PI * 2)
-      ctx.fill()
+      const isHovered = hoveredTag && village.tagType === hoveredTag.type && village.tagLabel === hoveredTag.label
+      if (isHovered) return // drawn in second pass
 
-      // Pulsing border (animated via requestAnimationFrame)
-      ctx.strokeStyle = '#dc2626'
-      ctx.lineWidth = 3 / zoom
-      ctx.globalAlpha = 1
-      ctx.beginPath()
-      ctx.arc(x, y, size * 1.5, 0, Math.PI * 2)
-      ctx.stroke()
+      ctx.fillStyle = village.tagColor
+      ctx.strokeStyle = village.is_capital ? '#fbbf24' : village.tagColor
+      ctx.globalAlpha = hoveredTag ? 0.15 : 0.95
+
+      if (village.tagType === 'alliance') {
+        // Square for alliance
+        ctx.fillRect(x - size, y - size, size * 2, size * 2)
+        if (village.is_capital) {
+          ctx.lineWidth = 2 / zoom
+          ctx.strokeRect(x - size, y - size, size * 2, size * 2)
+        }
+      } else {
+        // Circle + pulsing ring for player
+        ctx.beginPath()
+        ctx.arc(x, y, size, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.lineWidth = 2 / zoom
+        ctx.globalAlpha = 0.6
+        ctx.beginPath()
+        ctx.arc(x, y, size * 1.7, 0, Math.PI * 2)
+        ctx.stroke()
+      }
     })
 
+    // Hovered tag highlight - draw on top in red
+    if (hoveredTag) {
+      taggedVillages.forEach(village => {
+        if (village.tagType !== hoveredTag.type || village.tagLabel !== hoveredTag.label) return
+        const x = coordToPixel(village.x)
+        const y = coordToPixel(village.y, true)
+        const baseSize = Math.min(8, Math.max(3, village.population / 100))
+        const size = baseSize / zoom * 1.4
+
+        ctx.fillStyle = '#ef4444'
+        ctx.globalAlpha = 1
+        ctx.beginPath()
+        ctx.arc(x, y, size, 0, Math.PI * 2)
+        ctx.fill()
+
+        ctx.strokeStyle = '#ffffff'
+        ctx.lineWidth = 1.5 / zoom
+        ctx.globalAlpha = 0.9
+        ctx.beginPath()
+        ctx.arc(x, y, size, 0, Math.PI * 2)
+        ctx.stroke()
+
+        ctx.strokeStyle = '#ef4444'
+        ctx.lineWidth = 2 / zoom
+        ctx.globalAlpha = 0.7
+        ctx.beginPath()
+        ctx.arc(x, y, size * 1.8, 0, Math.PI * 2)
+        ctx.stroke()
+      })
+    } else {
+      // Dim non-hovered when nothing hovered - no action needed (hoveredTag is null)
+    }
+
     ctx.restore()
-  }, [mapData, filterPlayer, filterAlliance, zoom, viewCenter])
+  }, [mapData, filterPlayers, filterAlliances, hoveredTag, zoom, viewCenter])
 
   // Redraw on changes
   useEffect(() => {
@@ -168,14 +222,14 @@ const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayer, filte
       animationId = requestAnimationFrame(animate)
     }
     
-    if (filterPlayer) {
+    if (filterPlayers.length > 0) {
       animationId = requestAnimationFrame(animate)
     }
     
     return () => {
       if (animationId) cancelAnimationFrame(animationId)
     }
-  }, [filterPlayer, drawMap])
+  }, [filterPlayers, drawMap])
 
   const handleWheel = useCallback((e) => {
     e.preventDefault()
@@ -221,15 +275,17 @@ const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayer, filte
       
       // Find village under cursor
       let hoveredVillage = null
-      const filterPlayerLower = filterPlayer?.toLowerCase() || ''
-      const filterAllianceLower = filterAlliance?.toLowerCase() || ''
-      
-      const threshold = 10 / zoom // Pixel threshold for hover detection
+      const playerTagsLower2 = filterPlayers.map(t => t.toLowerCase())
+      const allianceTagsLower2 = filterAlliances.map(t => t.toLowerCase())
+      const hasFilters2 = playerTagsLower2.length > 0 || allianceTagsLower2.length > 0
+
+      const threshold = 10 / zoom
       
       for (const village of mapData.villages) {
-        if (filterAllianceLower && !village.alliance.toLowerCase().includes(filterAllianceLower)) {
-          continue
-        }
+        const ownerL = village.owner.toLowerCase()
+        const allianceL = village.alliance.toLowerCase()
+        const isTagged = playerTagsLower2.some(t => ownerL.includes(t)) || allianceTagsLower2.some(t => allianceL.includes(t))
+        if (hasFilters2 && !isTagged) continue
         
         const vx = coordToPixel(village.x)
         const vy = coordToPixel(village.y, true)
@@ -253,7 +309,7 @@ const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayer, filte
         setTooltip({ visible: false, x: 0, y: 0, village: null })
       }
     }
-  }, [isDragging, zoom, dragStart, setViewCenter, mapData, filterPlayer, filterAlliance, coordToPixel])
+  }, [isDragging, zoom, dragStart, setViewCenter, mapData, filterPlayers, filterAlliances, coordToPixel])
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false)

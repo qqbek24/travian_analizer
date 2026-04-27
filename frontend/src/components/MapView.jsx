@@ -12,12 +12,16 @@ import MapViewLeaflet from './MapViewLeaflet'
 
 const API_URL = 'http://localhost:8000'
 
+const PALETTE = ['#f97316','#06b6d4','#a855f7','#84cc16','#ec4899','#14b8a6','#e879f9','#facc15','#3b82f6','#22c55e']
+
 function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
   const [mapData, setMapData] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [filterPlayer, setFilterPlayer] = useState('')
-  const [filterPlayerInput, setFilterPlayerInput] = useState('') // Input bez debounce
-  const [filterAlliance, setFilterAlliance] = useState('')
+  const [filterPlayers, setFilterPlayers] = useState([])
+  const [filterPlayerInput, setFilterPlayerInput] = useState('')
+  const [filterAlliances, setFilterAlliances] = useState([])
+  const [filterAllianceInput, setFilterAllianceInput] = useState('')
+  const [hoveredTag, setHoveredTag] = useState(null)
   const [renderType, setRenderType] = useState('svg') // 'svg', 'canvas', 'leaflet'
   const [zoom, setZoom] = useState(1)
   const [viewCenter, setViewCenter] = useState({ x: 0, y: 0 })
@@ -31,17 +35,6 @@ function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
     }
   }, [selectedSnapshot])
 
-  // Debounce dla wyszukiwania gracza (500ms - zwiększone z 300ms dla lepszej płynności)
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setFilterPlayer(filterPlayerInput)
-    }, 500)
-    return () => clearTimeout(timer)
-  }, [filterPlayerInput])
-
-  // Deferred value dla smoother UI podczas wpisywania
-  const deferredFilterPlayer = useDeferredValue(filterPlayer)
-
   const loadMapData = async () => {
     setLoading(true)
     try {
@@ -54,44 +47,45 @@ function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
     }
   }
 
-  // Zoptymalizowane filtrowanie wiosek z useMemo
-  const { normalVillages, highlightedVillages } = useMemo(() => {
-    if (!mapData?.villages) return { normalVillages: [], highlightedVillages: [] }
+  // Filtrowanie wiosek - multi-tag z kolorami per tag
+  const { normalVillages, taggedVillages } = useMemo(() => {
+    if (!mapData?.villages) return { normalVillages: [], taggedVillages: [] }
 
-    const filterPlayerLower = deferredFilterPlayer.toLowerCase()
-    const filterAllianceLower = filterAlliance.toLowerCase()
+    const playerTagsLower = filterPlayers.map(t => t.toLowerCase())
+    const allianceTagsLower = filterAlliances.map(t => t.toLowerCase())
+    const hasFilters = playerTagsLower.length > 0 || allianceTagsLower.length > 0
 
     const normal = []
-    const highlighted = []
+    const tagged = []
 
     mapData.villages.forEach(village => {
-      // Filtr alliance
-      if (filterAllianceLower && !village.alliance.toLowerCase().includes(filterAllianceLower)) {
+      const ownerL = village.owner.toLowerCase()
+      const allianceL = village.alliance.toLowerCase()
+
+      // Priorytet: gracz > sojusz
+      const playerIdx = playerTagsLower.findIndex(t => ownerL.includes(t))
+      if (playerIdx !== -1) {
+        const colorIdx = (filterAlliances.length + playerIdx) % PALETTE.length
+        tagged.push({ ...village, tagColor: PALETTE[colorIdx], tagType: 'player', tagLabel: filterPlayers[playerIdx] })
         return
       }
 
-      // Sprawdź czy podświetlona
-      const isPlayerMatch = filterPlayerLower && village.owner.toLowerCase().includes(filterPlayerLower)
-      
-      if (isPlayerMatch) {
-        highlighted.push(village)
-      } else {
-        normal.push(village)
+      const allianceIdx = allianceTagsLower.findIndex(t => allianceL.includes(t))
+      if (allianceIdx !== -1) {
+        const colorIdx = allianceIdx % PALETTE.length
+        tagged.push({ ...village, tagColor: PALETTE[colorIdx], tagType: 'alliance', tagLabel: filterAlliances[allianceIdx] })
+        return
       }
+
+      if (!hasFilters) normal.push(village)
     })
 
-    return { normalVillages: normal, highlightedVillages: highlighted }
-  }, [mapData, deferredFilterPlayer, filterAlliance])
+    return { normalVillages: normal, taggedVillages: tagged }
+  }, [mapData, filterPlayers, filterAlliances])
 
   const filteredVillages = useMemo(() => {
-    return [...normalVillages, ...highlightedVillages]
-  }, [normalVillages, highlightedVillages])
-
-  // Sprawdź czy wioska należy do przefiltrowanego gracza
-  const isHighlighted = (village) => {
-    if (!filterPlayer) return false
-    return village.owner.toLowerCase().includes(filterPlayer.toLowerCase())
-  }
+    return [...normalVillages, ...taggedVillages]
+  }, [normalVillages, taggedVillages])
 
   // Konwersja koordynatów mapy do pikseli
   const mapSize = 600
@@ -228,22 +222,52 @@ function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
           </div>
 
           <div className="grid">
-            <div>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <label style={{ display: 'block', marginBottom: '0.5rem', color: '#94a3b8', fontSize: '0.875rem' }}>Gracze (Enter = dodaj):</label>
+              <div style={{ minHeight: '2rem', display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.5rem', alignContent: 'flex-start' }}>
+                {filterPlayers.map((tag, i) => (
+                  <span key={tag + i} style={{ background: PALETTE[(filterAlliances.length + i) % PALETTE.length], color: '#fff', padding: '0.2rem 0.6rem', borderRadius: '1rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.4rem', whiteSpace: 'nowrap' }}>
+                    {tag}
+                    <button onClick={() => setFilterPlayers(prev => prev.filter((_, idx) => idx !== i))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fff', padding: 0, lineHeight: 1, fontSize: '1rem' }}>×</button>
+                  </span>
+                ))}
+              </div>
               <input
                 type="text"
                 className="input"
-                placeholder="Szukaj gracza (podświetli na czerwono)..."
+                placeholder="Nazwa gracza..."
                 value={filterPlayerInput}
                 onChange={(e) => setFilterPlayerInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && filterPlayerInput.trim()) {
+                    setFilterPlayers(prev => [...prev, filterPlayerInput.trim()])
+                    setFilterPlayerInput('')
+                  }
+                }}
               />
             </div>
-            <div>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <label style={{ display: 'block', marginBottom: '0.5rem', color: '#94a3b8', fontSize: '0.875rem' }}>Sojusze (Enter = dodaj):</label>
+              <div style={{ minHeight: '2rem', display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.5rem', alignContent: 'flex-start' }}>
+                {filterAlliances.map((tag, i) => (
+                  <span key={tag + i} style={{ background: PALETTE[i % PALETTE.length], color: '#fff', padding: '0.2rem 0.6rem', borderRadius: '1rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.4rem', whiteSpace: 'nowrap' }}>
+                    {tag}
+                    <button onClick={() => setFilterAlliances(prev => prev.filter((_, idx) => idx !== i))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fff', padding: 0, lineHeight: 1, fontSize: '1rem' }}>×</button>
+                  </span>
+                ))}
+              </div>
               <input
                 type="text"
                 className="input"
-                placeholder="Filtruj po sojuszu..."
-                value={filterAlliance}
-                onChange={(e) => setFilterAlliance(e.target.value)}
+                placeholder="Tag sojuszu..."
+                value={filterAllianceInput}
+                onChange={(e) => setFilterAllianceInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && filterAllianceInput.trim()) {
+                    setFilterAlliances(prev => [...prev, filterAllianceInput.trim()])
+                    setFilterAllianceInput('')
+                  }
+                }}
               />
             </div>
           </div>
@@ -374,19 +398,25 @@ function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
             <div className="loading">Ładowanie mapy...</div>
           ) : mapData ? (
             <div>
-              <p style={{ color: '#94a3b8', marginBottom: '1rem' }}>
-                Pokazuje {filteredVillages?.length || 0} z {mapData.villages.length} wiosek
-                {filterPlayer && <span style={{ color: '#ef4444', marginLeft: '1rem' }}>
-                  🔴 Podświetlono: {highlightedVillages.length} wiosek
-                </span>}
+              <p style={{ color: '#94a3b8', marginBottom: '1rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+                <span>Pokazuje {filteredVillages?.length || 0} z {mapData.villages.length} wiosek</span>
+                {filterAlliances.map((tag, i) => {
+                  const count = taggedVillages.filter(v => v.tagType === 'alliance' && v.tagLabel === tag).length
+                  return <span key={tag + i} style={{ color: PALETTE[i % PALETTE.length] }}>■ {tag}: {count}</span>
+                })}
+                {filterPlayers.map((tag, i) => {
+                  const count = taggedVillages.filter(v => v.tagType === 'player' && v.tagLabel === tag).length
+                  return <span key={tag + i} style={{ color: PALETTE[(filterAlliances.length + i) % PALETTE.length] }}>● {tag}: {count}</span>
+                })}
               </p>
               
               {/* Renderowanie różnych typów map */}
               {renderType === 'canvas' ? (
                 <MapViewCanvas
                   mapData={mapData}
-                  filterPlayer={deferredFilterPlayer}
-                  filterAlliance={filterAlliance}
+                  filterPlayers={filterPlayers}
+                  filterAlliances={filterAlliances}
+                  hoveredTag={hoveredTag}
                   zoom={zoom}
                   setZoom={setZoom}
                   viewCenter={viewCenter}
@@ -395,8 +425,9 @@ function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
               ) : renderType === 'leaflet' ? (
                 <MapViewLeaflet
                   mapData={mapData}
-                  filterPlayer={deferredFilterPlayer}
-                  filterAlliance={filterAlliance}
+                  filterPlayers={filterPlayers}
+                  filterAlliances={filterAlliances}
+                  hoveredTag={hoveredTag}
                   zoom={zoom}
                   setZoom={setZoom}
                   viewCenter={viewCenter}
@@ -418,18 +449,19 @@ function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
               }}>
                 <style>
                   {`
-                    @keyframes highlightPulse {
-                      0%, 100% { 
-                        stroke: #dc2626; 
-                        stroke-width: 3;
-                      }
-                      50% { 
-                        stroke: #f97316;
-                        stroke-width: 4;
-                      }
+                    @keyframes playerPulse {
+                      0%, 100% { stroke-width: 2; opacity: 0.8; }
+                      50% { stroke-width: 4; opacity: 0.25; }
                     }
-                    .highlighted-village {
-                      animation: highlightPulse 1.5s ease-in-out infinite;
+                    .player-village {
+                      animation: playerPulse 1.5s ease-in-out infinite;
+                    }
+                    @keyframes hoverRingPulse {
+                      0%, 100% { stroke-opacity: 1; stroke-width: 3; }
+                      50% { stroke-opacity: 0.2; stroke-width: 6; }
+                    }
+                    .hover-ring {
+                      animation: hoverRingPulse 0.6s ease-in-out infinite;
                     }
                   `}
                 </style>
@@ -552,7 +584,7 @@ function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
                           </g>
                         ))}
 
-                        {/* Wioski - najpierw zwykłe, potem podświetlone */}
+                        {/* Wioski: (1) zwykłe (2) sojusz (3) gracz */}
                         {normalVillages.map((village, idx) => {
                           const x = coordToPixel(village.x)
                           const y = coordToPixel(village.y, true)
@@ -579,41 +611,58 @@ function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
                           )
                         })}
 
-                        {/* Podświetlone wioski gracza - z pulsującym obramowaniem */}
-                        {highlightedVillages.map((village, idx) => {
+                        {/* Tagowane wioski - nieaktywne (przyciemnione gdy coś jest hoveredTag) */}
+                        {taggedVillages
+                          .filter(v => !(hoveredTag && v.tagType === hoveredTag.type && v.tagLabel === hoveredTag.label))
+                          .map((village) => {
                           const x = coordToPixel(village.x)
                           const y = coordToPixel(village.y, true)
                           const baseSize = Math.min(8, Math.max(3, village.population / 100))
                           const size = baseSize / zoom
-                          const fillColor = village.is_capital ? '#fbbf24' : '#3b82f6'
-                          
+                          const isPlayer = village.tagType === 'player'
+                          const dimmed = hoveredTag !== null
+
                           return (
-                            <g key={`highlighted-${village.x}-${village.y}`}>
-                              {/* Główna kropka */}
+                            <g key={`tagged-${village.x}-${village.y}`}>
                               <circle
-                                cx={x}
-                                cy={y}
-                                r={size}
-                                fill={fillColor}
-                                opacity="0.9"
-                                style={{ cursor: 'pointer' }}
-                              />
-                              {/* Pulsujące obramowanie */}
-                              <circle
-                                cx={x}
-                                cy={y}
-                                r={size * 1.5}
-                                fill="none"
-                                className="highlighted-village"
+                                cx={x} cy={y} r={size}
+                                fill={village.tagColor}
+                                opacity={dimmed ? 0.2 : 0.95}
+                                stroke={village.is_capital ? '#fbbf24' : village.tagColor}
+                                strokeWidth={village.is_capital ? 2 / zoom : 1 / zoom}
                                 style={{ cursor: 'pointer' }}
                               >
-                                <title>
-                                  🔴 {village.name} ({village.x}|{village.y}){'\n'}
-                                  {village.owner} {village.alliance ? `[${village.alliance}]` : ''}{'\n'}
-                                  Pop: {village.population}
-                                  {village.is_capital ? '\n👑 STOLICA' : ''}
-                                </title>
+                                <title>{isPlayer ? '●' : '■'} [{village.tagLabel}] {village.name} ({village.x}|{village.y}){'\n'}{village.owner} {village.alliance ? `[${village.alliance}]` : ''}{'\n'}Pop: {village.population}{village.is_capital ? '\n👑 STOLICA' : ''}</title>
                               </circle>
+                              {isPlayer && !dimmed && (
+                                <circle cx={x} cy={y} r={size * 1.6} fill="none" stroke={village.tagColor} className="player-village" />
+                              )}
+                            </g>
+                          )
+                        })}
+
+                        {/* Podświetlone (hover z legendy) - rysowane na wierzchu, kolor czerwony */}
+                        {hoveredTag && taggedVillages
+                          .filter(v => v.tagType === hoveredTag.type && v.tagLabel === hoveredTag.label)
+                          .map((village) => {
+                          const x = coordToPixel(village.x)
+                          const y = coordToPixel(village.y, true)
+                          const baseSize = Math.min(8, Math.max(3, village.population / 100))
+                          const size = baseSize / zoom * 1.4
+
+                          return (
+                            <g key={`hover-${village.x}-${village.y}`}>
+                              <circle
+                                cx={x} cy={y} r={size}
+                                fill="#ef4444"
+                                opacity="1"
+                                stroke="#ffffff"
+                                strokeWidth={1.5 / zoom}
+                                style={{ cursor: 'pointer' }}
+                              >
+                                <title>[{village.tagLabel}] {village.name} ({village.x}|{village.y}){'\n'}{village.owner} {village.alliance ? `[${village.alliance}]` : ''}{'\n'}Pop: {village.population}{village.is_capital ? '\n👑 STOLICA' : ''}</title>
+                              </circle>
+                              <circle cx={x} cy={y} r={size * 1.8} fill="none" stroke="#ef4444" className="hover-ring" />
                             </g>
                           )
                         })}
@@ -641,7 +690,7 @@ function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
               )}
 
               {/* Legenda - wspólna dla wszystkich rendererów */}
-              <div style={{ marginTop: '1rem', display: 'flex', gap: '2rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+              <div style={{ marginTop: '1rem', display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <div style={{ width: '12px', height: '12px', background: '#3b82f6', borderRadius: '50%' }}></div>
                   <span style={{ color: '#94a3b8', fontSize: '0.875rem' }}>Zwykła wioska</span>
@@ -650,25 +699,28 @@ function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
                   <div style={{ width: '12px', height: '12px', background: '#fbbf24', borderRadius: '50%' }}></div>
                   <span style={{ color: '#94a3b8', fontSize: '0.875rem' }}>Stolica</span>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <div style={{ 
-                    width: '12px', 
-                    height: '12px', 
-                    borderRadius: '50%',
-                    background: 'linear-gradient(120deg, #ef4444 0%, #eab308 50%, #22c55e 100%)',
-                    animation: 'colorPulse 2s ease-in-out infinite'
-                  }}></div>
-                  <span style={{ 
-                    color: '#94a3b8', 
-                    fontSize: '0.875rem', 
-                    fontWeight: '500',
-                    background: 'linear-gradient(120deg, #ef4444, #eab308, #22c55e)',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent'
-                  }}>
-                    Wyszukany gracz (migające kolory)
-                  </span>
-                </div>
+                {filterAlliances.map((tag, i) => (
+                  <div
+                    key={tag + i}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', padding: '0.2rem 0.4rem', borderRadius: '0.25rem', background: hoveredTag?.label === tag && hoveredTag?.type === 'alliance' ? 'rgba(239,68,68,0.15)' : 'transparent', transition: 'background 0.15s' }}
+                    onMouseEnter={() => setHoveredTag({ type: 'alliance', label: tag })}
+                    onMouseLeave={() => setHoveredTag(null)}
+                  >
+                    <div style={{ width: '12px', height: '12px', background: hoveredTag?.label === tag && hoveredTag?.type === 'alliance' ? '#ef4444' : PALETTE[i % PALETTE.length], borderRadius: '2px', transition: 'background 0.15s' }}></div>
+                    <span style={{ color: hoveredTag?.label === tag && hoveredTag?.type === 'alliance' ? '#ef4444' : PALETTE[i % PALETTE.length], fontSize: '0.875rem', fontWeight: '500' }}>■ {tag}</span>
+                  </div>
+                ))}
+                {filterPlayers.map((tag, i) => (
+                  <div
+                    key={tag + i}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', padding: '0.2rem 0.4rem', borderRadius: '0.25rem', background: hoveredTag?.label === tag && hoveredTag?.type === 'player' ? 'rgba(239,68,68,0.15)' : 'transparent', transition: 'background 0.15s' }}
+                    onMouseEnter={() => setHoveredTag({ type: 'player', label: tag })}
+                    onMouseLeave={() => setHoveredTag(null)}
+                  >
+                    <div style={{ width: '12px', height: '12px', background: hoveredTag?.label === tag && hoveredTag?.type === 'player' ? '#ef4444' : PALETTE[(filterAlliances.length + i) % PALETTE.length], borderRadius: '50%', boxShadow: `0 0 6px ${hoveredTag?.label === tag && hoveredTag?.type === 'player' ? '#ef4444' : PALETTE[(filterAlliances.length + i) % PALETTE.length]}`, transition: 'background 0.15s' }}></div>
+                    <span style={{ color: hoveredTag?.label === tag && hoveredTag?.type === 'player' ? '#ef4444' : PALETTE[(filterAlliances.length + i) % PALETTE.length], fontSize: '0.875rem', fontWeight: '500' }}>● {tag} (pulsuje)</span>
+                  </div>
+                ))}
               </div>
 
               <div style={{ 
@@ -679,9 +731,8 @@ function MapView({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
                 borderLeft: '3px solid #3b82f6'
               }}>
                 <p style={{ color: '#94a3b8', fontSize: '0.875rem', margin: 0 }}>
-                  💡 <strong>Wskazówki:</strong> Użyj scroll myszy nad mapą aby zoomować. 
-                  Po przybliżeniu przeciągaj mapę myszką. 
-                  Wpisz nazwę gracza aby podświetlić jego wioski migającymi kolorami (czerwony → żółty → zielony).
+                  💡 <strong>Wskazówki:</strong> Użyj scroll myszy nad mapą aby zoomować. Po przybliżeniu przeciągaj mapę myszką.
+                  Wpisz nazwę gracza lub tag sojuszu i naciśnij Enter, aby dodać tag. Każdy tag ma osobny kolor. Kliknij × na tagu, aby go usunąć.
                   Przyciski NW/NE/SW/SE szybko przybliżają odpowiednią ćwiartkę.
                 </p>
               </div>

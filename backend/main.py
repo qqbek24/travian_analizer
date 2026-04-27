@@ -60,6 +60,7 @@ class AnalyzeInactiveRequest(BaseModel):
     center_x: Optional[int] = None
     center_y: Optional[int] = None
     radius: Optional[float] = None
+    exclude_saved: bool = False
 
 class InactiveListCreate(BaseModel):
     name: str
@@ -73,7 +74,7 @@ class InactiveListCreate(BaseModel):
 class InactiveListResponse(BaseModel):
     id: int
     name: str
-    created_at: datetime
+    created_at: Optional[datetime] = None
     old_snapshot_name: str
     new_snapshot_name: str
     center_x: Optional[int]
@@ -83,6 +84,9 @@ class InactiveListResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class InactiveListUpdate(BaseModel):
+    data: Dict[str, Any]
 
 # Helper functions
 def parse_sql_line(line: str) -> Village | None:
@@ -368,6 +372,32 @@ async def compare_snapshots(
         }
     )
 
+@app.get("/player-history/{player_name}")
+async def get_player_history(
+    player_name: str,
+    db: Session = Depends(get_db)
+):
+    """Historia gracza we wszystkich snapshotach (posortowane po nazwie)"""
+    snapshots = db.query(DBSnapshot).order_by(DBSnapshot.name).all()
+
+    history = []
+    for snapshot in snapshots:
+        villages = db.query(DBVillage).filter(
+            DBVillage.snapshot_id == snapshot.id,
+            DBVillage.owner_name == player_name
+        ).all()
+
+        if villages:
+            total_pop = sum(v.population for v in villages)
+            history.append({
+                "snapshot": snapshot.name,
+                "population": total_pop,
+                "villages": len(villages)
+            })
+
+    return {"player_name": player_name, "history": history}
+
+
 @app.get("/alliances/{snapshot_name}")
 async def get_alliance_stats(snapshot_name: str, db: Session = Depends(get_db)):
     """Statystyki sojuszy"""
@@ -448,6 +478,18 @@ async def analyze_inactive(request: AnalyzeInactiveRequest, db: Session = Depend
     if not new_snapshot:
         raise HTTPException(status_code=404, detail=f"Snapshot '{request.new_snapshot}' nie istnieje")
     
+    # Zbierz nazwy graczy już zapisanych na listach (jeśli exclude_saved=True)
+    excluded_players = None
+    if request.exclude_saved:
+        all_lists = db.query(DBInactiveList).all()
+        excluded_players = set()
+        for lst in all_lists:
+            lst_data = json.loads(lst.data) if lst.data else {}
+            for category in ("inactive_players", "disappeared_players", "population_drops"):
+                for entry in lst_data.get(category, []):
+                    if "player_name" in entry:
+                        excluded_players.add(entry["player_name"])
+
     # Wykonaj analizę
     result = analyze_inactive_players(
         db,
@@ -455,7 +497,8 @@ async def analyze_inactive(request: AnalyzeInactiveRequest, db: Session = Depend
         request.new_snapshot,
         request.center_x,
         request.center_y,
-        request.radius
+        request.radius,
+        excluded_players
     )
     
     return result
@@ -471,6 +514,7 @@ async def create_inactive_list(request: InactiveListCreate, db: Session = Depend
     # Zapisz listę
     new_list = DBInactiveList(
         name=request.name,
+        created_at=datetime.now().isoformat(),
         old_snapshot_name=request.old_snapshot,
         new_snapshot_name=request.new_snapshot,
         center_x=request.center_x,
@@ -484,8 +528,8 @@ async def create_inactive_list(request: InactiveListCreate, db: Session = Depend
     db.refresh(new_list)
     
     # Konwertuj data z JSON string na dict
-    response_data = new_list.__dict__.copy()
-    response_data['data'] = json.loads(new_list.data)
+    response_data = {k: v for k, v in new_list.__dict__.items() if not k.startswith('_')}
+    response_data['data'] = json.loads(new_list.data) if new_list.data else {}
     
     return InactiveListResponse(**response_data)
 
@@ -496,8 +540,8 @@ async def get_inactive_lists(db: Session = Depends(get_db)):
     
     result = []
     for lst in lists:
-        response_data = lst.__dict__.copy()
-        response_data['data'] = json.loads(lst.data)
+        response_data = {k: v for k, v in lst.__dict__.items() if not k.startswith('_')}
+        response_data['data'] = json.loads(lst.data) if lst.data else {}
         result.append(InactiveListResponse(**response_data))
     
     return result
@@ -510,9 +554,26 @@ async def get_inactive_list(list_id: int, db: Session = Depends(get_db)):
     if not lst:
         raise HTTPException(status_code=404, detail=f"Lista o ID {list_id} nie istnieje")
     
-    response_data = lst.__dict__.copy()
-    response_data['data'] = json.loads(lst.data)
+    response_data = {k: v for k, v in lst.__dict__.items() if not k.startswith('_')}
+    response_data['data'] = json.loads(lst.data) if lst.data else {}
     
+    return InactiveListResponse(**response_data)
+
+@app.patch("/inactive-lists/{list_id}", response_model=InactiveListResponse)
+async def update_inactive_list_data(list_id: int, request: InactiveListUpdate, db: Session = Depends(get_db)):
+    """Zaktualizuj dane zapisanej listy nieaktywnych graczy"""
+    lst = db.query(DBInactiveList).filter(DBInactiveList.id == list_id).first()
+
+    if not lst:
+        raise HTTPException(status_code=404, detail=f"Lista o ID {list_id} nie istnieje")
+
+    lst.data = json.dumps(request.data)
+    db.commit()
+    db.refresh(lst)
+
+    response_data = {k: v for k, v in lst.__dict__.items() if not k.startswith('_')}
+    response_data['data'] = json.loads(lst.data)
+
     return InactiveListResponse(**response_data)
 
 @app.post("/inactive-lists/{list_id}/check")

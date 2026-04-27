@@ -12,6 +12,7 @@ function Comparison({ snapshots }) {
   const [snapshot2, setSnapshot2] = useState('')
   const [playerName, setPlayerName] = useState('')
   const [comparison, setComparison] = useState(null)
+  const [history, setHistory] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -25,38 +26,52 @@ function Comparison({ snapshots }) {
     setError(null)
 
     try {
-      const response = await axios.post(`${API_URL}/compare`, null, {
-        params: {
-          snapshot1,
-          snapshot2,
-          player_name: playerName
-        }
-      })
-      setComparison(response.data)
+      const [compResponse, histResponse] = await Promise.all([
+        axios.post(`${API_URL}/compare`, null, {
+          params: { snapshot1, snapshot2, player_name: playerName }
+        }),
+        axios.get(`${API_URL}/player-history/${encodeURIComponent(playerName)}`)
+      ])
+      setComparison(compResponse.data)
+
+      // Filtruj historię do snapshotów między snapshot1 a snapshot2 (włącznie)
+      const allHistory = histResponse.data.history
+      const names = snapshots.map(s => s.name).sort()
+      const idx1 = names.indexOf(snapshot1)
+      const idx2 = names.indexOf(snapshot2)
+      const [fromIdx, toIdx] = idx1 <= idx2 ? [idx1, idx2] : [idx2, idx1]
+      const rangeNames = new Set(names.slice(fromIdx, toIdx + 1))
+      setHistory(allHistory.filter(h => rangeNames.has(h.snapshot)))
     } catch (err) {
       setError(err.response?.data?.detail || 'Błąd porównania')
       setComparison(null)
+      setHistory(null)
     } finally {
       setLoading(false)
     }
   }
 
-  const chartData = comparison ? {
-    labels: ['Przed', 'Po'],
+  const chartData = history && history.length > 0 ? {
+    labels: history.map(h => h.snapshot),
     datasets: [
       {
         label: 'Populacja',
-        data: [comparison.old_data.population, comparison.new_data.population],
+        data: history.map(h => h.population),
         borderColor: '#3b82f6',
         backgroundColor: 'rgba(59, 130, 246, 0.5)',
-        tension: 0.4,
+        tension: 0.3,
+        pointRadius: 5,
+        pointHoverRadius: 7,
       },
       {
         label: 'Liczba wiosek',
-        data: [comparison.old_data.villages, comparison.new_data.villages],
+        data: history.map(h => h.villages),
         borderColor: '#8b5cf6',
         backgroundColor: 'rgba(139, 92, 246, 0.5)',
-        tension: 0.4,
+        tension: 0.3,
+        pointRadius: 5,
+        pointHoverRadius: 7,
+        yAxisID: 'y2',
       },
     ],
   } : null
@@ -69,11 +84,33 @@ function Comparison({ snapshots }) {
           color: '#cbd5e1'
         }
       },
+      tooltip: {
+        callbacks: {
+          label: (ctx) => {
+            const label = ctx.dataset.label
+            const value = ctx.parsed.y
+            if (ctx.datasetIndex === 0) {
+              const idx = ctx.dataIndex
+              const prev = idx > 0 ? history[idx - 1].population : null
+              const diff = prev !== null ? (value - prev > 0 ? `+${(value - prev).toLocaleString()}` : `${(value - prev).toLocaleString()}`) : ''
+              return `${label}: ${value.toLocaleString()}${diff ? `  (${diff})` : ''}`
+            }
+            return `${label}: ${value}`
+          }
+        }
+      }
     },
     scales: {
       y: {
         ticks: { color: '#94a3b8' },
-        grid: { color: '#1e293b' }
+        grid: { color: '#1e293b' },
+        title: { display: true, text: 'Populacja', color: '#94a3b8' }
+      },
+      y2: {
+        position: 'right',
+        ticks: { color: '#8b5cf6' },
+        grid: { drawOnChartArea: false },
+        title: { display: true, text: 'Wioski', color: '#8b5cf6' }
       },
       x: {
         ticks: { color: '#94a3b8' },
@@ -191,7 +228,10 @@ function Comparison({ snapshots }) {
             <h3 style={{ color: '#60a5fa', marginBottom: '1.5rem' }}>
               Wykres Rozwoju
             </h3>
-            <Line data={chartData} options={chartOptions} />
+            {chartData
+              ? <Line data={chartData} options={chartOptions} />
+              : <p style={{ color: '#94a3b8' }}>Brak danych historycznych do wykresu</p>
+            }
           </div>
 
           {comparison.growth.population > 0 ? (
