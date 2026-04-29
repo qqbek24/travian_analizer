@@ -1,5 +1,5 @@
-import { useEffect, useState, useMemo, memo } from 'react'
-import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, Polyline, useMap } from 'react-leaflet'
+import React, { useEffect, useState, useMemo, memo } from 'react'
+import { MapContainer, TileLayer, CircleMarker, Circle, Popup, Tooltip, Polyline, useMap } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import L from 'leaflet'
 import CenterFocusStrongIcon from '@mui/icons-material/CenterFocusStrong'
@@ -66,7 +66,7 @@ function MapUpdater({ center, zoom }) {
 
 const PALETTE = ['#f97316','#06b6d4','#a855f7','#84cc16','#ec4899','#14b8a6','#e879f9','#facc15','#3b82f6','#22c55e']
 
-const MapViewLeaflet = memo(function MapViewLeaflet({ mapData, filterPlayers = [], filterAlliances = [], hoveredTag = null, zoom, setZoom, viewCenter, setViewCenter }) {
+const MapViewLeaflet = memo(function MapViewLeaflet({ mapData, filterPlayers = [], filterAlliances = [], hoveredTag = null, zoom, setZoom, viewCenter, setViewCenter, regionOverlay = null, raidList = null, inactiveOverlays = [] }) {
   const leafletCenter = useMemo(() => [viewCenter.y, viewCenter.x], [viewCenter])
   const leafletZoom = useMemo(() => Math.max(1, Math.min(5, 3 + (zoom - 1) * 0.5)), [zoom])
   
@@ -101,11 +101,99 @@ const MapViewLeaflet = memo(function MapViewLeaflet({ mapData, filterPlayers = [
         return
       }
 
-      if (!hasFilters) normal.push(village)
+      if (!hasFilters || regionOverlay?.show) normal.push(village)
     })
 
     return { normalVillages: normal, taggedVillages: tagged }
-  }, [mapData, filterPlayers, filterAlliances])
+  }, [mapData, filterPlayers, filterAlliances, regionOverlay])
+
+  // Memoize normal villages — no hoveredTag dep, won't re-render on hover
+  const normalMarkers = useMemo(() => {
+    const hasOverlays = taggedVillages.length > 0 || raidList?.show || inactiveOverlays.length > 0
+    return normalVillages.map(village => {
+      const regionColor = regionOverlay?.show && regionOverlay.regionColors && village.region
+        ? regionOverlay.regionColors[village.region]
+        : null
+      const isHighlighted = regionColor && regionOverlay?.highlightedRegion === village.region
+      const color = regionColor ?? (village.is_capital ? '#fbbf24' : '#3b82f6')
+      const radius = regionColor ? 3 : Math.min(8, Math.max(3, village.population / 100))
+      const fillOpacity = regionColor ? (isHighlighted ? 1.0 : (hasOverlays ? 0.4 : 0.8)) : 0.7
+      return (
+        <CircleMarker
+          key={`normal-${village.x}-${village.y}`}
+          center={[village.y, village.x]}
+          radius={radius}
+          pathOptions={{ fillColor: color, fillOpacity, color: isHighlighted ? '#fff' : color, weight: isHighlighted ? 1 : 0.5, opacity: 0.8 }}
+        >
+          <Tooltip direction="top" offset={[0, -10]} opacity={0.95}>
+            <div style={{ fontSize: '0.875rem' }}>
+              <strong>{village.name}</strong> ({village.x}|{village.y})<br />
+              {village.owner} {village.alliance ? `[${village.alliance}]` : ''}<br />
+              Pop: {village.population}{village.is_capital && <> 👑</>}
+            </div>
+          </Tooltip>
+        </CircleMarker>
+      )
+    })
+  }, [normalVillages, regionOverlay, taggedVillages.length, raidList?.show, inactiveOverlays.length])
+
+  // Memoize non-hovered tagged — only changes when hoveredTag goes null↔non-null
+  const hasHoveredTag = hoveredTag != null
+  const taggedMarkers = useMemo(() => (
+    taggedVillages
+      .filter(v => !(hoveredTag && v.tagType === hoveredTag.type && v.tagLabel === hoveredTag.label))
+      .map(village => {
+        const isPlayer = village.tagType === 'player'
+        return (
+          <CircleMarker
+            key={`tagged-${village.x}-${village.y}`}
+            center={[village.y, village.x]}
+            radius={Math.min(8, Math.max(3, village.population / 100))}
+            pathOptions={{
+              fillColor: village.tagColor,
+              fillOpacity: hasHoveredTag ? 0.25 : 0.95,
+              color: village.is_capital ? '#fbbf24' : village.tagColor,
+              weight: isPlayer ? 3 : 1.5,
+              opacity: hasHoveredTag ? 0.3 : 1
+            }}
+            className={isPlayer ? 'leaflet-pulsing-marker' : ''}
+          >
+            <Tooltip direction="top" offset={[0, -10]} opacity={0.95}>
+              <div style={{ fontSize: '0.875rem' }}>
+                <strong style={{ color: village.tagColor }}>[{village.tagLabel}] {village.name}</strong> ({village.x}|{village.y})<br />
+                {village.owner} {village.alliance ? `[${village.alliance}]` : ''}<br />
+                Pop: {village.population}{village.is_capital && <> 👑</>}
+              </div>
+            </Tooltip>
+          </CircleMarker>
+        )
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [taggedVillages, hasHoveredTag])
+
+  // Memoize hovered villages — small set, fast re-render
+  const hoveredMarkers = useMemo(() => {
+    if (!hoveredTag) return null
+    return taggedVillages
+      .filter(v => v.tagType === hoveredTag.type && v.tagLabel === hoveredTag.label)
+      .map(village => (
+        <CircleMarker
+          key={`hovered-${village.x}-${village.y}`}
+          center={[village.y, village.x]}
+          radius={Math.min(8, Math.max(3, village.population / 100)) * 1.5}
+          pathOptions={{ fillColor: '#ef4444', fillOpacity: 1, color: '#ffffff', weight: 2, opacity: 1 }}
+          className="leaflet-hovered-marker"
+        >
+          <Tooltip direction="top" offset={[0, -10]} opacity={0.95}>
+            <div style={{ fontSize: '0.875rem' }}>
+              <strong style={{ color: '#ef4444' }}>[{village.tagLabel}] {village.name}</strong> ({village.x}|{village.y})<br />
+              {village.owner} {village.alliance ? `[${village.alliance}]` : ''}<br />
+              Pop: {village.population}{village.is_capital && <> 👑</>}
+            </div>
+          </Tooltip>
+        </CircleMarker>
+      ))
+  }, [hoveredTag, taggedVillages])
 
   return (
     <div style={{ 
@@ -117,7 +205,7 @@ const MapViewLeaflet = memo(function MapViewLeaflet({ mapData, filterPlayers = [
       height: '950px'
     }}>
       <MapContainer 
-        center={[0, 0]} 
+        center={[0, 0]}
         zoom={1.5} 
         bounds={[[-200, -200], [200, 200]]}
         boundsOptions={{ padding: [30, 30] }}
@@ -164,91 +252,54 @@ const MapViewLeaflet = memo(function MapViewLeaflet({ mapData, filterPlayers = [
           pathOptions={{ color: '#1e293b', weight: 1, opacity: 0.5, dashArray: '5,5' }}
         />
 
-        {/* Normal villages */}
-        {normalVillages.map((village, idx) => {
-          const color = village.is_capital ? '#fbbf24' : '#3b82f6'
-          const radius = Math.min(8, Math.max(3, village.population / 100))
-          
-          return (
-            <CircleMarker
-              key={`normal-${village.x}-${village.y}`}
-              center={[village.y, village.x]}
-              radius={radius}
-              pathOptions={{
-                fillColor: color,
-                fillOpacity: 0.7,
-                color: color,
-                weight: 1,
-                opacity: 0.8
-              }}
-            >
-              <Tooltip direction="top" offset={[0, -10]} opacity={0.95}>
-                <div style={{ fontSize: '0.875rem' }}>
-                  <strong>{village.name}</strong> ({village.x}|{village.y})<br />
-                  {village.owner} {village.alliance ? `[${village.alliance}]` : ''}<br />
-                  Pop: {village.population}
-                  {village.is_capital && <> 👑</>}
-                </div>
-              </Tooltip>
-              <Popup>
-                <div style={{ color: '#0f172a' }}>
-                  <strong>{village.name}</strong><br />
-                  Współrzędne: ({village.x}|{village.y})<br />
-                  Właściciel: {village.owner}<br />
-                  {village.alliance && <>Sojusz: [{village.alliance}]<br /></>}
-                  Populacja: {village.population}
-                  {village.is_capital && <><br />👑 <strong>STOLICA</strong></>}
-                </div>
-              </Popup>
-            </CircleMarker>
-          )
-        })}
+        {/* Normal villages — memoized, no hover dep */}
+        {normalMarkers}
 
-        {/* Alliance & player tagged villages */}
-        {taggedVillages.map((village) => {
-          const isHovered = hoveredTag && village.tagType === hoveredTag.type && village.tagLabel === hoveredTag.label
-          const radius = Math.min(8, Math.max(3, village.population / 100)) * (isHovered ? 1.5 : 1)
-          const isPlayer = village.tagType === 'player'
-          const fillColor = isHovered ? '#ef4444' : village.tagColor
-          const strokeColor = isHovered ? '#ffffff' : (village.is_capital ? '#fbbf24' : village.tagColor)
-          const strokeWeight = isHovered ? 2 : (isPlayer ? 3 : 1.5)
-          const fillOpacity = isHovered ? 1 : (hoveredTag ? 0.25 : 0.95)
+        {/* Inactive overlays */}
+        {inactiveOverlays.map(overlay => (
+          <React.Fragment key={`ioverlay-${overlay.id}`}>
+            {overlay.center_x != null && overlay.center_y != null && overlay.radius != null && (
+              <Circle
+                center={[overlay.center_y, overlay.center_x]}
+                radius={overlay.radius * 111000 / 400}
+                pathOptions={{ color: overlay.color, weight: 1.5, fillOpacity: 0, dashArray: '8,4', opacity: 0.7 }}
+              />
+            )}
+            {overlay.villages.map((v, idx) => (
+              <CircleMarker key={idx} center={[v.y, v.x]} radius={5}
+                pathOptions={{ fillColor: overlay.color, fillOpacity: 0.85, color: '#fff', weight: 0.5 }}>
+                <Tooltip direction="top" offset={[0, -6]} opacity={0.95}>
+                  <span>{overlay.name}: {v.label} ({v.x}|{v.y})</span>
+                </Tooltip>
+              </CircleMarker>
+            ))}
+          </React.Fragment>
+        ))}
 
-          return (
-            <CircleMarker
-              key={`tagged-${village.x}-${village.y}`}
-              center={[village.y, village.x]}
-              radius={radius}
-              pathOptions={{
-                fillColor,
-                fillOpacity,
-                color: strokeColor,
-                weight: strokeWeight,
-                opacity: isHovered ? 1 : (hoveredTag ? 0.3 : 1)
-              }}
-              className={isPlayer && !isHovered ? 'leaflet-pulsing-marker' : (isHovered ? 'leaflet-hovered-marker' : '')}
-            >
-              <Tooltip direction="top" offset={[0, -10]} opacity={0.95}>
-                <div style={{ fontSize: '0.875rem' }}>
-                  <strong style={{ color: village.tagColor }}>[{village.tagLabel}] {village.name}</strong> ({village.x}|{village.y})<br />
-                  {village.owner} {village.alliance ? `[${village.alliance}]` : ''}<br />
-                  Pop: {village.population}
-                  {village.is_capital && <> 👑</>}
-                </div>
-              </Tooltip>
-              <Popup>
-                <div style={{ color: '#0f172a' }}>
-                  <strong>[{village.tagLabel}] {village.name}</strong><br />
-                  Współrzędne: ({village.x}|{village.y})<br />
-                  Właściciel: {village.owner}<br />
-                  {village.alliance && <>Sojusz: [{village.alliance}]<br /></>}
-                  Populacja: {village.population}
-                  {village.is_capital && <><br />👑 <strong>STOLICA</strong></>}
-                </div>
-              </Popup>
-            </CircleMarker>
-          )
-        })}
+        {/* Raid list overlay */}
+        {raidList?.show && raidList.targets?.map((target, idx) => (
+          <CircleMarker key={`raid-${idx}`} center={[target.y, target.x]} radius={7}
+            pathOptions={{ fillColor: '#ef4444', fillOpacity: 0.9, color: '#ffffff', weight: 1.5 }}>
+            <Tooltip direction="top" offset={[0, -8]} opacity={0.95} permanent={false}>
+              <span>#{idx + 1} 🗡️ {target.name || ''} ({target.x}|{target.y}){target.owner ? ` — ${target.owner}` : ''}{target.alliance ? ` [${target.alliance}]` : ''}</span>
+            </Tooltip>
+          </CircleMarker>
+        ))}
+
+        {/* Raid home marker */}
+        {raidList?.show && raidList.homeX != null && raidList.homeY != null && (
+          <CircleMarker center={[raidList.homeY, raidList.homeX]} radius={8}
+            pathOptions={{ fillColor: '#facc15', fillOpacity: 1, color: '#ffffff', weight: 1.5 }}>
+            <Tooltip direction="top" offset={[0, -8]} opacity={0.95}>
+              <span>🏠 Start: ({raidList.homeX}|{raidList.homeY})</span>
+            </Tooltip>
+          </CircleMarker>
+        )}
+
+        {/* Tagged (dimmed) — memoized on !!hoveredTag, not specific tag */}
+        {taggedMarkers}
+        {/* Hovered villages — small fast set */}
+        {hoveredMarkers}
       </MapContainer>
 
       {/* CSS for pulsing animation */}

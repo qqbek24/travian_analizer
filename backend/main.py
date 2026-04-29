@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from database import get_db, DBSnapshot, DBVillage, DBInactiveList
+from database import get_db, DBSnapshot, DBVillage, DBInactiveList, DBRaidList
 from inactive_analyzer import compare_snapshots as analyze_inactive_players
 
 app = FastAPI(title="Travian Map Analyzer")
@@ -61,6 +61,7 @@ class AnalyzeInactiveRequest(BaseModel):
     center_y: Optional[int] = None
     radius: Optional[float] = None
     exclude_saved: bool = False
+    exclude_list_ids: Optional[List[int]] = None
 
 class InactiveListCreate(BaseModel):
     name: str
@@ -70,6 +71,21 @@ class InactiveListCreate(BaseModel):
     center_y: Optional[int] = None
     radius: Optional[float] = None
     data: Dict[str, Any]
+
+class InactiveListSummary(BaseModel):
+    id: int
+    name: str
+    created_at: Optional[datetime] = None
+    old_snapshot_name: str
+    new_snapshot_name: str
+    center_x: Optional[int]
+    center_y: Optional[int]
+    radius: Optional[float]
+    inactive_count: int = 0
+    disappeared_count: int = 0
+
+    class Config:
+        from_attributes = True
 
 class InactiveListResponse(BaseModel):
     id: int
@@ -244,7 +260,8 @@ async def get_map_data(snapshot_name: str, db: Session = Depends(get_db)):
                 "owner": v.owner_name,
                 "alliance": v.alliance_tag,
                 "population": v.population,
-                "is_capital": v.is_capital
+                "is_capital": v.is_capital,
+                "region": v.region
             }
             for v in villages
         ]
@@ -478,9 +495,18 @@ async def analyze_inactive(request: AnalyzeInactiveRequest, db: Session = Depend
     if not new_snapshot:
         raise HTTPException(status_code=404, detail=f"Snapshot '{request.new_snapshot}' nie istnieje")
     
-    # Zbierz nazwy graczy już zapisanych na listach (jeśli exclude_saved=True)
+    # Zbierz nazwy graczy do wykluczenia
     excluded_players = None
-    if request.exclude_saved:
+    if request.exclude_list_ids:
+        specific_lists = db.query(DBInactiveList).filter(DBInactiveList.id.in_(request.exclude_list_ids)).all()
+        excluded_players = set()
+        for lst in specific_lists:
+            lst_data = json.loads(lst.data) if lst.data else {}
+            for category in ("inactive_players", "disappeared_players", "population_drops"):
+                for entry in lst_data.get(category, []):
+                    if "player_name" in entry:
+                        excluded_players.add(entry["player_name"])
+    elif request.exclude_saved:
         all_lists = db.query(DBInactiveList).all()
         excluded_players = set()
         for lst in all_lists:
@@ -533,17 +559,27 @@ async def create_inactive_list(request: InactiveListCreate, db: Session = Depend
     
     return InactiveListResponse(**response_data)
 
-@app.get("/inactive-lists", response_model=List[InactiveListResponse])
+@app.get("/inactive-lists", response_model=List[InactiveListSummary])
 async def get_inactive_lists(db: Session = Depends(get_db)):
-    """Pobierz wszystkie zapisane listy nieaktywnych graczy"""
+    """Pobierz wszystkie zapisane listy nieaktywnych graczy (bez pełnych danych)"""
     lists = db.query(DBInactiveList).order_by(DBInactiveList.created_at.desc()).all()
-    
+
     result = []
     for lst in lists:
-        response_data = {k: v for k, v in lst.__dict__.items() if not k.startswith('_')}
-        response_data['data'] = json.loads(lst.data) if lst.data else {}
-        result.append(InactiveListResponse(**response_data))
-    
+        data = json.loads(lst.data) if lst.data else {}
+        result.append(InactiveListSummary(
+            id=lst.id,
+            name=lst.name,
+            created_at=lst.created_at,
+            old_snapshot_name=lst.old_snapshot_name,
+            new_snapshot_name=lst.new_snapshot_name,
+            center_x=lst.center_x,
+            center_y=lst.center_y,
+            radius=lst.radius,
+            inactive_count=len(data.get("inactive_players", [])),
+            disappeared_count=len(data.get("disappeared_players", [])),
+        ))
+
     return result
 
 @app.get("/inactive-lists/{list_id}", response_model=InactiveListResponse)
@@ -622,6 +658,189 @@ async def delete_inactive_list(list_id: int, db: Session = Depends(get_db)):
         "message": f"Lista '{list_name}' została usunięta",
         "deleted_id": list_id
     }
+
+# --------------- Region analysis ---------------
+
+@app.get("/regions/{snapshot_name}")
+async def get_region_stats(
+    snapshot_name: str,
+    top_alliances: int = 0,  # 0 = wszyscy, N = top N sojuszów w regionie
+    db: Session = Depends(get_db)
+):
+    """Statystyki sojuszy per region"""
+    snapshot = db.query(DBSnapshot).filter(DBSnapshot.name == snapshot_name).first()
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Snapshot nie znaleziony")
+
+    villages = db.query(DBVillage).filter(
+        DBVillage.snapshot_id == snapshot.id,
+        DBVillage.region != None,
+        DBVillage.region != ''
+    ).all()
+
+    # Grupuj per region
+    regions: dict = {}
+    for v in villages:
+        r = v.region
+        if r not in regions:
+            regions[r] = {"total_population": 0, "total_villages": 0, "alliances": {}}
+        regions[r]["total_population"] += v.population
+        regions[r]["total_villages"] += 1
+        tag = v.alliance_tag or ""
+        if tag:
+            if tag not in regions[r]["alliances"]:
+                regions[r]["alliances"][tag] = {"population": 0, "villages": 0, "members": set()}
+            regions[r]["alliances"][tag]["population"] += v.population
+            regions[r]["alliances"][tag]["villages"] += 1
+            regions[r]["alliances"][tag]["members"].add(v.owner_name)
+
+    result = []
+    for region_name, data in regions.items():
+        alliances_list = [
+            {
+                "tag": tag,
+                "population": stats["population"],
+                "villages": stats["villages"],
+                "members": len(stats["members"])
+            }
+            for tag, stats in data["alliances"].items()
+        ]
+        alliances_list.sort(key=lambda x: x["population"], reverse=True)
+
+        # Podstawa do procentów
+        if top_alliances > 0:
+            top = alliances_list[:top_alliances]
+            base_population = sum(a["population"] for a in top)
+        else:
+            base_population = data["total_population"]
+            top = alliances_list
+
+        for a in top:
+            a["percent"] = round(a["population"] / base_population * 100, 1) if base_population > 0 else 0
+
+        result.append({
+            "region": region_name,
+            "total_population": data["total_population"],
+            "total_villages": data["total_villages"],
+            "base_population": base_population,
+            "alliances": top
+        })
+
+    result.sort(key=lambda x: x["total_population"], reverse=True)
+    return {"regions": result}
+
+
+# --------------- Raid lists ---------------
+
+class RaidListCreate(BaseModel):
+    name: str
+    home_x: Optional[int] = None
+    home_y: Optional[int] = None
+    snapshot_name: Optional[str] = None
+    targets: List[Dict[str, Any]] = []
+
+class RaidListUpdate(BaseModel):
+    name: Optional[str] = None
+    home_x: Optional[int] = None
+    home_y: Optional[int] = None
+    targets: Optional[List[Dict[str, Any]]] = None
+
+class RaidListResponse(BaseModel):
+    id: int
+    name: str
+    created_at: Optional[str] = None
+    home_x: Optional[int] = None
+    home_y: Optional[int] = None
+    snapshot_name: Optional[str] = None
+    targets: List[Dict[str, Any]] = []
+
+    class Config:
+        from_attributes = True
+
+
+@app.post("/raid-lists", response_model=RaidListResponse)
+async def create_raid_list(request: RaidListCreate, db: Session = Depends(get_db)):
+    """Utwórz nową listę grabieży"""
+    new_list = DBRaidList(
+        name=request.name,
+        created_at=datetime.now().isoformat(),
+        home_x=request.home_x,
+        home_y=request.home_y,
+        snapshot_name=request.snapshot_name,
+        data=json.dumps(request.targets)
+    )
+    db.add(new_list)
+    db.commit()
+    db.refresh(new_list)
+    return RaidListResponse(
+        id=new_list.id,
+        name=new_list.name,
+        created_at=new_list.created_at,
+        home_x=new_list.home_x,
+        home_y=new_list.home_y,
+        snapshot_name=new_list.snapshot_name,
+        targets=json.loads(new_list.data) if new_list.data else []
+    )
+
+
+@app.get("/raid-lists", response_model=List[RaidListResponse])
+async def get_raid_lists(db: Session = Depends(get_db)):
+    """Pobierz wszystkie listy grabieży"""
+    lists = db.query(DBRaidList).order_by(DBRaidList.created_at.desc()).all()
+    return [
+        RaidListResponse(
+            id=l.id, name=l.name, created_at=l.created_at,
+            home_x=l.home_x, home_y=l.home_y, snapshot_name=l.snapshot_name,
+            targets=json.loads(l.data) if l.data else []
+        )
+        for l in lists
+    ]
+
+
+@app.get("/raid-lists/{list_id}", response_model=RaidListResponse)
+async def get_raid_list(list_id: int, db: Session = Depends(get_db)):
+    l = db.query(DBRaidList).filter(DBRaidList.id == list_id).first()
+    if not l:
+        raise HTTPException(status_code=404, detail=f"Lista o ID {list_id} nie istnieje")
+    return RaidListResponse(
+        id=l.id, name=l.name, created_at=l.created_at,
+        home_x=l.home_x, home_y=l.home_y, snapshot_name=l.snapshot_name,
+        targets=json.loads(l.data) if l.data else []
+    )
+
+
+@app.patch("/raid-lists/{list_id}", response_model=RaidListResponse)
+async def update_raid_list(list_id: int, request: RaidListUpdate, db: Session = Depends(get_db)):
+    """Zaktualizuj listę grabieży (nazwę, home, cele)"""
+    l = db.query(DBRaidList).filter(DBRaidList.id == list_id).first()
+    if not l:
+        raise HTTPException(status_code=404, detail=f"Lista o ID {list_id} nie istnieje")
+    if request.name is not None:
+        l.name = request.name
+    if request.home_x is not None:
+        l.home_x = request.home_x
+    if request.home_y is not None:
+        l.home_y = request.home_y
+    if request.targets is not None:
+        l.data = json.dumps(request.targets)
+    db.commit()
+    db.refresh(l)
+    return RaidListResponse(
+        id=l.id, name=l.name, created_at=l.created_at,
+        home_x=l.home_x, home_y=l.home_y, snapshot_name=l.snapshot_name,
+        targets=json.loads(l.data) if l.data else []
+    )
+
+
+@app.delete("/raid-lists/{list_id}")
+async def delete_raid_list(list_id: int, db: Session = Depends(get_db)):
+    l = db.query(DBRaidList).filter(DBRaidList.id == list_id).first()
+    if not l:
+        raise HTTPException(status_code=404, detail=f"Lista o ID {list_id} nie istnieje")
+    db.delete(l)
+    db.commit()
+    return {"message": f"Lista '{l.name}' została usunięta", "deleted_id": list_id}
+
 
 @app.get("/")
 async def root():

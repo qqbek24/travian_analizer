@@ -119,7 +119,7 @@ function SaveListDialog({ open, onClose, onSave }) {
   );
 }
 
-function InactivePlayers() {
+function InactivePlayers({ inactiveOverlays = [], onInactiveOverlayToggle = null }) {
   const [snapshots, setSnapshots] = useState([]);
   const [oldSnapshot, setOldSnapshot] = useState('');
   const [newSnapshot, setNewSnapshot] = useState('');
@@ -133,6 +133,7 @@ function InactivePlayers() {
   const [activeTab, setActiveTab] = useState(0);
   const [loading, setLoading] = useState(false);
   const [excludeSaved, setExcludeSaved] = useState(false);
+  const [excludeListIds, setExcludeListIds] = useState([]);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
   const [selectedList, setSelectedList] = useState(null);
@@ -213,8 +214,12 @@ function InactivePlayers() {
       const payload = {
         old_snapshot: oldSnapshot,
         new_snapshot: newSnapshot,
-        exclude_saved: excludeSaved
+        exclude_saved: excludeListIds.length === 0 ? excludeSaved : false,
       };
+
+      if (excludeListIds.length > 0) {
+        payload.exclude_list_ids = excludeListIds;
+      }
 
       if (centerX && centerY && radius) {
         payload.center_x = parseInt(centerX);
@@ -455,40 +460,23 @@ function InactivePlayers() {
   };
 
   const handleSelectAllClick = (event, tabKey, data) => {
-    if (event.target.checked) {
-      setSelectedRows({
-        ...selectedRows,
-        [tabKey]: data.map((_, index) => index)
-      });
-    } else {
-      setSelectedRows({
-        ...selectedRows,
-        [tabKey]: []
-      });
-    }
+    setSelectedRows(prev => ({
+      ...prev,
+      [tabKey]: event.target.checked ? data.map((_, index) => index) : []
+    }));
   };
 
   const handleRowClick = (tabKey, index) => {
-    const currentSelected = selectedRows[tabKey];
-    const selectedIndex = currentSelected.indexOf(index);
-    let newSelected = [];
-
-    if (selectedIndex === -1) {
-      newSelected = newSelected.concat(currentSelected, index);
-    } else if (selectedIndex === 0) {
-      newSelected = newSelected.concat(currentSelected.slice(1));
-    } else if (selectedIndex === currentSelected.length - 1) {
-      newSelected = newSelected.concat(currentSelected.slice(0, -1));
-    } else if (selectedIndex > 0) {
-      newSelected = newSelected.concat(
-        currentSelected.slice(0, selectedIndex),
-        currentSelected.slice(selectedIndex + 1)
-      );
-    }
-
-    setSelectedRows({
-      ...selectedRows,
-      [tabKey]: newSelected
+    setSelectedRows(prev => {
+      const currentSelected = prev[tabKey];
+      const selectedIndex = currentSelected.indexOf(index);
+      let newSelected;
+      if (selectedIndex === -1) {
+        newSelected = [...currentSelected, index];
+      } else {
+        newSelected = currentSelected.filter((_, i) => i !== selectedIndex);
+      }
+      return { ...prev, [tabKey]: newSelected };
     });
   };
 
@@ -818,35 +806,37 @@ function InactivePlayers() {
           ))}
         </Tabs>
 
-        {selectedCount > 0 && (
-          <Box 
-            sx={{ 
-              display: 'flex', 
-              justifyContent: 'space-between', 
-              alignItems: 'center',
-              backgroundColor: '#334155',
-              px: 2,
-              py: 1,
-              borderRadius: '0 0 0.75rem 0.75rem'
+        <Box 
+          sx={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center',
+            backgroundColor: '#334155',
+            px: 2,
+            py: 1,
+            borderRadius: '0 0 0.75rem 0.75rem'
+          }}
+        >
+          <Typography sx={{ color: '#e2e8f0', fontSize: '0.9rem' }}>
+            {selectedCount > 0
+              ? `Zaznaczono: ${selectedCount} ${selectedCount === 1 ? 'rekord' : 'rekordów'}`
+              : 'Zaznacz rekordy aby zapisać listę'}
+          </Typography>
+          <Button
+            variant="contained"
+            size="small"
+            onClick={() => setSaveDialogOpen(true)}
+            disabled={selectedCount === 0}
+            startIcon={<SaveIcon />}
+            sx={{
+              backgroundColor: selectedCount > 0 ? '#3b82f6' : undefined,
+              '&:hover': { backgroundColor: '#2563eb' },
+              '&:disabled': { backgroundColor: '#475569', color: '#94a3b8' }
             }}
           >
-            <Typography sx={{ color: '#e2e8f0', fontSize: '0.9rem' }}>
-              Zaznaczono: {selectedCount} {selectedCount === 1 ? 'rekord' : 'rekordów'}
-            </Typography>
-            <Button
-              variant="contained"
-              size="small"
-              onClick={() => setSaveDialogOpen(true)}
-              startIcon={<SaveIcon />}
-              sx={{
-                backgroundColor: '#3b82f6',
-                '&:hover': { backgroundColor: '#2563eb' }
-              }}
-            >
-              Zapisz zaznaczone
-            </Button>
-          </Box>
-        )}
+            Zapisz zaznaczone
+          </Button>
+        </Box>
 
         <Box sx={{ mt: 2 }}>
           {renderTable(currentTab.data, currentTab.columns, currentTab.tabKey)}
@@ -1060,6 +1050,38 @@ function InactivePlayers() {
                     Pomiń graczy już zapisanych na listach
                   </Typography>
                 </Box>
+                {savedLists.length > 0 && (
+                  <FormControl fullWidth size="small" sx={{ mt: 0.5 }}>
+                    <InputLabel sx={{ color: '#94a3b8', fontSize: '0.8rem' }}>
+                      Lub wyklucz tylko z wybranych list
+                    </InputLabel>
+                    <Select
+                      multiple
+                      value={excludeListIds}
+                      onChange={(e) => setExcludeListIds(e.target.value)}
+                      label="Lub wyklucz tylko z wybranych list"
+                      renderValue={(selected) =>
+                        selected.map(id => savedLists.find(l => l.id === id)?.name || id).join(', ')
+                      }
+                      sx={{
+                        color: '#e2e8f0',
+                        backgroundColor: '#0f172a',
+                        '& .MuiOutlinedInput-notchedOutline': { borderColor: '#334155' },
+                        '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#60a5fa' },
+                        '& .MuiSvgIcon-root': { color: '#94a3b8' },
+                        fontSize: '0.85rem'
+                      }}
+                      MenuProps={{ PaperProps: { sx: { backgroundColor: '#1e293b', color: '#e2e8f0' } } }}
+                    >
+                      {savedLists.map(l => (
+                        <MenuItem key={l.id} value={l.id} sx={{ '&:hover': { backgroundColor: '#334155' } }}>
+                          <Checkbox checked={excludeListIds.includes(l.id)} sx={{ color: '#64748b', '&.Mui-checked': { color: '#3b82f6' }, p: 0.5 }} />
+                          {l.name}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                )}
               </Grid>
               <Grid item xs={12}>
                 <Button
@@ -1168,6 +1190,25 @@ function InactivePlayers() {
                       >
                         Sprawdź ponownie
                       </Button>
+                      {onInactiveOverlayToggle && (() => {
+                        const isOnMap = inactiveOverlays.some(o => o.id === list.id)
+                        const overlayColor = inactiveOverlays.find(o => o.id === list.id)?.color
+                        return (
+                          <Button
+                            size="small"
+                            onClick={() => onInactiveOverlayToggle(list)}
+                            sx={{
+                              color: isOnMap ? overlayColor : '#94a3b8',
+                              border: isOnMap ? `1px solid ${overlayColor}` : '1px solid #475569',
+                              borderRadius: '0.25rem',
+                              px: 1,
+                              '&:hover': { backgroundColor: 'rgba(255,255,255,0.05)' }
+                            }}
+                          >
+                            🗺️ {isOnMap ? 'Ukryj' : 'Na mapie'}
+                          </Button>
+                        )
+                      })()}
                       <IconButton
                         size="small"
                         onClick={() => deleteList(list.id)}

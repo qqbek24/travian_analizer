@@ -66,6 +66,18 @@ class DBInactiveList(Base):
     radius = Column(Float, nullable=True)  # Promień wyszukiwania
     data = Column(Text)  # JSON z wynikami analizy
 
+class DBRaidList(Base):
+    """Lista grabieży z osadą startową i celami"""
+    __tablename__ = "raid_lists"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)
+    created_at = Column(String)
+    home_x = Column(Integer, nullable=True)
+    home_y = Column(Integer, nullable=True)
+    snapshot_name = Column(String, nullable=True)  # snapshot z którego pochodzi
+    data = Column(Text)  # JSON: {targets: [{x,y,name,owner,alliance,population,note}]}
+
 # Create tables
 Base.metadata.create_all(bind=engine)
 

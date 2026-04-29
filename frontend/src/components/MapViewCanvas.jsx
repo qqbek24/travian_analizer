@@ -2,24 +2,28 @@ import { useEffect, useRef, useState, useCallback, memo } from 'react'
 
 const PALETTE = ['#f97316','#06b6d4','#a855f7','#84cc16','#ec4899','#14b8a6','#e879f9','#facc15','#3b82f6','#22c55e']
 
-const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayers = [], filterAlliances = [], hoveredTag = null, zoom, setZoom, viewCenter, setViewCenter }) {
+const MAP_CANVAS_SIZE = 600
+const MAP_MIN = -200
+const MAP_MAX = 200
+const MAP_RANGE = MAP_MAX - MAP_MIN
+
+function coordToPixel(coord, isY = false) {
+  const normalized = (coord - MAP_MIN) / MAP_RANGE
+  const pixel = normalized * MAP_CANVAS_SIZE
+  return isY ? MAP_CANVAS_SIZE - pixel : pixel
+}
+
+const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayers = [], filterAlliances = [], hoveredTag = null, zoom, setZoom, viewCenter, setViewCenter, regionOverlay = null, raidList = null, inactiveOverlays = [] }) {
   const canvasRef = useRef(null)
+  const hoverCanvasRef = useRef(null)
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
   const [tooltip, setTooltip] = useState({ visible: false, x: 0, y: 0, village: null })
-  
-  const mapSize = 600
-  const MAP_MIN = -200
-  const MAP_MAX = 200
-  const MAP_RANGE = MAP_MAX - MAP_MIN
 
-  const coordToPixel = (coord, isY = false) => {
-    const normalized = (coord - MAP_MIN) / MAP_RANGE
-    const pixel = normalized * mapSize
-    return isY ? mapSize - pixel : pixel
-  }
+  const mapSize = MAP_CANVAS_SIZE
+  const hasHoveredTag = hoveredTag != null
 
-  const drawMap = useCallback(() => {
+  const drawBase = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas || !mapData) return
 
@@ -121,22 +125,33 @@ const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayers = [],
         return
       }
 
-      if (!hasFilters) normalVillages.push(village)
+      if (!hasFilters || regionOverlay?.show) normalVillages.push(village)
     })
 
-    // Draw normal villages (blue/gold)
+    // Draw normal villages (region color or blue/gold)
+    const hasOverlays = taggedVillages.length > 0 || raidList?.show || inactiveOverlays.length > 0
     normalVillages.forEach(village => {
       const x = coordToPixel(village.x)
       const y = coordToPixel(village.y, true)
-      const color = village.is_capital ? '#fbbf24' : '#3b82f6'
-      const baseSize = Math.min(8, Math.max(3, village.population / 100))
-      const size = baseSize / zoom
+      const regionColor = regionOverlay?.show && regionOverlay.regionColors && village.region
+        ? regionOverlay.regionColors[village.region]
+        : null
+      const isHighlighted = regionColor && regionOverlay?.highlightedRegion === village.region
+      const color = regionColor ?? (village.is_capital ? '#fbbf24' : '#3b82f6')
+      const size = regionColor ? 3 / zoom : Math.min(8, Math.max(3, village.population / 100)) / zoom
+      const alpha = regionColor ? (isHighlighted ? 1.0 : (hasOverlays ? 0.4 : 0.8)) : 0.7
 
       ctx.fillStyle = color
-      ctx.globalAlpha = 0.7
+      ctx.globalAlpha = alpha
       ctx.beginPath()
       ctx.arc(x, y, size, 0, Math.PI * 2)
       ctx.fill()
+      if (isHighlighted) {
+        ctx.strokeStyle = '#fff'
+        ctx.lineWidth = 0.4 / zoom
+        ctx.globalAlpha = 1
+        ctx.stroke()
+      }
     })
 
     // Draw tagged villages (alliance = square marker, player = circle + ring)
@@ -147,11 +162,11 @@ const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayers = [],
       const size = baseSize / zoom
 
       const isHovered = hoveredTag && village.tagType === hoveredTag.type && village.tagLabel === hoveredTag.label
-      if (isHovered) return // drawn in second pass
+      if (isHovered) return // drawn on hover canvas
 
       ctx.fillStyle = village.tagColor
       ctx.strokeStyle = village.is_capital ? '#fbbf24' : village.tagColor
-      ctx.globalAlpha = hoveredTag ? 0.15 : 0.95
+      ctx.globalAlpha = hasHoveredTag ? 0.15 : 0.95
 
       if (village.tagType === 'alliance') {
         // Square for alliance
@@ -166,70 +181,152 @@ const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayers = [],
         ctx.arc(x, y, size, 0, Math.PI * 2)
         ctx.fill()
         ctx.lineWidth = 2 / zoom
-        ctx.globalAlpha = 0.6
+        ctx.globalAlpha = 0.5
         ctx.beginPath()
         ctx.arc(x, y, size * 1.7, 0, Math.PI * 2)
         ctx.stroke()
       }
     })
 
-    // Hovered tag highlight - draw on top in red
-    if (hoveredTag) {
-      taggedVillages.forEach(village => {
-        if (village.tagType !== hoveredTag.type || village.tagLabel !== hoveredTag.label) return
-        const x = coordToPixel(village.x)
-        const y = coordToPixel(village.y, true)
-        const baseSize = Math.min(8, Math.max(3, village.population / 100))
-        const size = baseSize / zoom * 1.4
-
-        ctx.fillStyle = '#ef4444'
+    // Raid list overlay
+    if (raidList?.show) {
+      if (raidList.targets?.length) {
+        raidList.targets.forEach((target, idx) => {
+          const tx = coordToPixel(target.x)
+          const ty = coordToPixel(target.y, true)
+          ctx.fillStyle = '#ef4444'
+          ctx.globalAlpha = 0.9
+          ctx.beginPath()
+          ctx.arc(tx, ty, 5 / zoom, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.strokeStyle = '#ffffff'
+          ctx.lineWidth = 1.5 / zoom
+          ctx.stroke()
+          ctx.fillStyle = '#ef4444'
+          ctx.globalAlpha = 1
+          ctx.font = `bold ${9 / zoom}px sans-serif`
+          ctx.textAlign = 'center'
+          ctx.fillText(String(idx + 1), tx, ty - 7 / zoom)
+        })
+      }
+      if (raidList.homeX != null && raidList.homeY != null) {
+        const hx = coordToPixel(raidList.homeX)
+        const hy = coordToPixel(raidList.homeY, true)
+        const s = 8 / zoom
+        ctx.fillStyle = '#facc15'
+        ctx.strokeStyle = '#ffffff'
+        ctx.lineWidth = 0.4 / zoom
         ctx.globalAlpha = 1
         ctx.beginPath()
-        ctx.arc(x, y, size, 0, Math.PI * 2)
+        for (let i = 0; i < 10; i++) {
+          const angle = (i * Math.PI / 5) - Math.PI / 2
+          const r = i % 2 === 0 ? s : s * 0.4
+          if (i === 0) ctx.moveTo(hx + r * Math.cos(angle), hy + r * Math.sin(angle))
+          else ctx.lineTo(hx + r * Math.cos(angle), hy + r * Math.sin(angle))
+        }
+        ctx.closePath()
         ctx.fill()
-
-        ctx.strokeStyle = '#ffffff'
-        ctx.lineWidth = 1.5 / zoom
-        ctx.globalAlpha = 0.9
-        ctx.beginPath()
-        ctx.arc(x, y, size, 0, Math.PI * 2)
         ctx.stroke()
+      }
+    }
 
-        ctx.strokeStyle = '#ef4444'
-        ctx.lineWidth = 2 / zoom
-        ctx.globalAlpha = 0.7
-        ctx.beginPath()
-        ctx.arc(x, y, size * 1.8, 0, Math.PI * 2)
-        ctx.stroke()
+    // Inactive overlays
+    if (inactiveOverlays.length) {
+      inactiveOverlays.forEach(overlay => {
+        if (overlay.center_x != null && overlay.center_y != null && overlay.radius != null) {
+          ctx.strokeStyle = overlay.color
+          ctx.lineWidth = 1.5 / zoom
+          ctx.globalAlpha = 0.7
+          ctx.setLineDash([8 / zoom, 4 / zoom])
+          ctx.beginPath()
+          ctx.arc(
+            coordToPixel(overlay.center_x),
+            coordToPixel(overlay.center_y, true),
+            overlay.radius * mapSize / MAP_RANGE,
+            0, Math.PI * 2
+          )
+          ctx.stroke()
+          ctx.setLineDash([])
+        }
+        overlay.villages.forEach(v => {
+          const vx = coordToPixel(v.x)
+          const vy = coordToPixel(v.y, true)
+          ctx.fillStyle = overlay.color
+          ctx.globalAlpha = 0.85
+          ctx.beginPath()
+          ctx.arc(vx, vy, 4 / zoom, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.strokeStyle = '#fff'
+          ctx.lineWidth = 0.4 / zoom
+          ctx.stroke()
+        })
       })
-    } else {
-      // Dim non-hovered when nothing hovered - no action needed (hoveredTag is null)
     }
 
     ctx.restore()
-  }, [mapData, filterPlayers, filterAlliances, hoveredTag, zoom, viewCenter])
+  }, [mapData, filterPlayers, filterAlliances, hasHoveredTag, zoom, viewCenter, regionOverlay, raidList, inactiveOverlays])
 
-  // Redraw on changes
-  useEffect(() => {
-    drawMap()
-  }, [drawMap])
+  // Hover overlay — only redraws highlighted villages (fast)
+  const drawHover = useCallback(() => {
+    const hoverCanvas = hoverCanvasRef.current
+    if (!hoverCanvas) return
+    const dpr = window.devicePixelRatio || 1
+    hoverCanvas.width = (mapSize + 40) * dpr
+    hoverCanvas.height = (mapSize + 40) * dpr
+    hoverCanvas.style.width = `${mapSize + 40}px`
+    hoverCanvas.style.height = `${mapSize + 40}px`
+    if (!hoveredTag || !mapData) return
 
-  // Animation loop for pulsing effect
-  useEffect(() => {
-    let animationId
-    const animate = () => {
-      drawMap()
-      animationId = requestAnimationFrame(animate)
+    const ctx = hoverCanvas.getContext('2d')
+    ctx.scale(dpr, dpr)
+    ctx.save()
+    ctx.translate(mapSize / 2 + 20, mapSize / 2 + 20)
+    ctx.scale(zoom, zoom)
+    ctx.translate(-coordToPixel(viewCenter.x), -coordToPixel(viewCenter.y, true))
+
+    const playerTagsLower = filterPlayers.map(t => t.toLowerCase())
+    const allianceTagsLower = filterAlliances.map(t => t.toLowerCase())
+
+    for (const village of mapData.villages) {
+      const ownerL = village.owner.toLowerCase()
+      const allianceL = village.alliance.toLowerCase()
+      let tagType, tagLabel
+      const pi = playerTagsLower.findIndex(t => ownerL.includes(t))
+      if (pi !== -1) { tagType = 'player'; tagLabel = filterPlayers[pi] }
+      else {
+        const ai = allianceTagsLower.findIndex(t => allianceL.includes(t))
+        if (ai !== -1) { tagType = 'alliance'; tagLabel = filterAlliances[ai] }
+      }
+      if (!tagType || tagType !== hoveredTag.type || tagLabel !== hoveredTag.label) continue
+
+      const x = coordToPixel(village.x)
+      const y = coordToPixel(village.y, true)
+      const size = Math.min(8, Math.max(3, village.population / 100)) / zoom * 1.4
+
+      ctx.fillStyle = '#ef4444'
+      ctx.globalAlpha = 1
+      ctx.beginPath()
+      ctx.arc(x, y, size, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = 1.5 / zoom
+      ctx.globalAlpha = 0.9
+      ctx.stroke()
+      ctx.strokeStyle = '#ef4444'
+      ctx.lineWidth = 2 / zoom
+      ctx.globalAlpha = 0.7
+      ctx.beginPath()
+      ctx.arc(x, y, size * 1.6, 0, Math.PI * 2)
+      ctx.stroke()
     }
-    
-    if (filterPlayers.length > 0) {
-      animationId = requestAnimationFrame(animate)
-    }
-    
-    return () => {
-      if (animationId) cancelAnimationFrame(animationId)
-    }
-  }, [filterPlayers, drawMap])
+
+    ctx.restore()
+  }, [hoveredTag, mapData, filterPlayers, filterAlliances, zoom, viewCenter])
+
+  // Redraw base when data/zoom/filters/overlays change
+  useEffect(() => { drawBase() }, [drawBase])
+  // Redraw hover overlay when hovered tag or zoom/pan change
+  useEffect(() => { drawHover() }, [drawHover])
 
   const handleWheel = useCallback((e) => {
     e.preventDefault()
@@ -309,7 +406,7 @@ const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayers = [],
         setTooltip({ visible: false, x: 0, y: 0, village: null })
       }
     }
-  }, [isDragging, zoom, dragStart, setViewCenter, mapData, filterPlayers, filterAlliances, coordToPixel])
+  }, [isDragging, zoom, dragStart, setViewCenter, mapData, filterPlayers, filterAlliances])
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false)
@@ -341,17 +438,28 @@ const MapViewCanvas = memo(function MapViewCanvas({ mapData, filterPlayers = [],
       cursor: isDragging ? 'grabbing' : (zoom > 1 ? 'grab' : 'default'),
       touchAction: 'none'
     }}>
-      <canvas
-        ref={canvasRef}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseLeaveCanvas}
-        style={{ 
-          border: '2px solid #334155',
-          borderRadius: '4px'
-        }}
-      />
+      <div style={{ position: 'relative', display: 'inline-block' }}>
+        <canvas
+          ref={canvasRef}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseLeaveCanvas}
+          style={{ 
+            border: '2px solid #334155',
+            borderRadius: '4px',
+            display: 'block'
+          }}
+        />
+        <canvas
+          ref={hoverCanvasRef}
+          style={{
+            position: 'absolute', top: 0, left: 0,
+            pointerEvents: 'none',
+            borderRadius: '4px'
+          }}
+        />
+      </div>
       
       {/* Tooltip */}
       {tooltip.visible && tooltip.village && (

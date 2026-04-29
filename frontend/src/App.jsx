@@ -12,6 +12,38 @@ import InactivePlayers from './components/InactivePlayers'
 function App() {
   const [snapshots, setSnapshots] = useState([])
   const [selectedSnapshot, setSelectedSnapshot] = useState('')
+  const [inactiveOverlays, setInactiveOverlays] = useState([])
+
+  const OVERLAY_PALETTE = ['#f97316','#06b6d4','#a855f7','#84cc16','#ec4899','#14b8a6','#e879f9','#facc15','#3b82f6','#22c55e']
+
+  const handleInactiveOverlayToggle = (list) => {
+    setInactiveOverlays(prev => {
+      const exists = prev.find(o => o.id === list.id)
+      if (exists) {
+        return prev.filter(o => o.id !== list.id)
+      }
+      const data = list.data || {}
+      const villages = []
+      ;(data.inactive_players || []).forEach(p =>
+        (p.villages || []).forEach(v => villages.push({ x: v.x, y: v.y, label: p.player_name }))
+      )
+      ;(data.disappeared_players || []).forEach(p =>
+        (p.villages || []).forEach(v => villages.push({ x: v.x, y: v.y, label: p.player_name }))
+      )
+      ;(data.disappeared_villages || []).forEach(v =>
+        villages.push({ x: v.x, y: v.y, label: v.village_name || v.owner || '?' })
+      )
+      return [...prev, {
+        id: list.id,
+        name: list.name,
+        color: OVERLAY_PALETTE[prev.length % OVERLAY_PALETTE.length],
+        villages,
+        center_x: list.center_x,
+        center_y: list.center_y,
+        radius: list.radius
+      }]
+    })
+  }
 
   return (
     <Router>
@@ -45,6 +77,7 @@ function App() {
                 selectedSnapshot={selectedSnapshot}
                 setSelectedSnapshot={setSelectedSnapshot}
                 snapshots={snapshots}
+                inactiveOverlays={inactiveOverlays}
               />
             } />
             <Route path="/dashboard" element={
@@ -73,7 +106,10 @@ function App() {
               />
             } />
             <Route path="/inactive" element={
-              <InactivePlayers />
+              <InactivePlayers
+                inactiveOverlays={inactiveOverlays}
+                onInactiveOverlayToggle={handleInactiveOverlayToggle}
+              />
             } />
           </Routes>
         </main>
