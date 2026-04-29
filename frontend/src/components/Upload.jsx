@@ -4,7 +4,7 @@ import DeleteIcon from '@mui/icons-material/Delete'
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep'
 import RefreshIcon from '@mui/icons-material/Refresh'
 
-const API_URL = 'http://localhost:8000'
+const API_URL = '/api'
 
 function Upload({ snapshots, setSnapshots, setSelectedSnapshot }) {
   const [file, setFile] = useState(null)

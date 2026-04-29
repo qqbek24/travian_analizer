@@ -46,7 +46,7 @@ import {
   ContentCopy as ContentCopyIcon
 } from '@mui/icons-material';
 
-const API_URL = "http://localhost:8000";
+const API_URL = "/api";
 
 function SaveListDialog({ open, onClose, onSave }) {
   const [name, setName] = useState('');
@@ -665,6 +665,7 @@ function InactivePlayers() {
         columns: addDistanceColumn([
           { label: 'Gracz', field: 'player_name' },
           { label: 'Sojusz', field: 'alliance' },
+          { label: 'Nazwa osady', field: 'nearest_village_name' },
           { label: 'Wioski', field: 'villages_count' },
           { label: 'Pop. (1)', field: 'old_population' },
           { label: 'Pop. (2)', field: 'new_population' },
@@ -706,6 +707,7 @@ function InactivePlayers() {
         columns: addDistanceColumn([
           { label: 'Gracz', field: 'player_name' },
           { label: 'Sojusz', field: 'alliance' },
+          { label: 'Nazwa osady', field: 'nearest_village_name' },
           { label: 'Wioski (stare)', field: 'old_villages_count' },
           { label: 'Populacja (stara)', field: 'old_total_population' },
           {

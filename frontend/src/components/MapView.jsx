@@ -10,7 +10,7 @@ import SouthEastIcon from '@mui/icons-material/SouthEast'
 import MapViewCanvas from './MapViewCanvas'
 import MapViewLeaflet from './MapViewLeaflet'
 
-const API_URL = 'http://localhost:8000'
+const API_URL = '/api'
 
 const PALETTE = ['#f97316','#06b6d4','#a855f7','#84cc16','#ec4899','#14b8a6','#e879f9','#facc15','#3b82f6','#22c55e']
 

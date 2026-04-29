@@ -9,7 +9,7 @@ import TrendingUpIcon from '@mui/icons-material/TrendingUp'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, ArcElement)
 
-const API_URL = 'http://localhost:8000'
+const API_URL = '/api'
 
 function Dashboard({ selectedSnapshot, snapshots, setSelectedSnapshot }) {
   const [topPlayers, setTopPlayers] = useState([])

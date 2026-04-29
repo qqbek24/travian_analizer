@@ -9,7 +9,7 @@ import FirstPageIcon from '@mui/icons-material/FirstPage'
 import LastPageIcon from '@mui/icons-material/LastPage'
 import PeopleIcon from '@mui/icons-material/People'
 
-const API_URL = 'http://localhost:8000'
+const API_URL = '/api'
 
 function PlayerList({ selectedSnapshot, setSelectedSnapshot, snapshots }) {
   const [players, setPlayers] = useState([])

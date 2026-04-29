@@ -145,6 +145,7 @@ def compare_snapshots(
                     "alliance": all_old_player_villages[0].alliance_tag if all_old_player_villages else None,
                     "old_villages_count": len(truly_disappeared),
                     "old_total_population": sum(v.population for v in truly_disappeared),
+                    "nearest_village_name": sorted_truly_disappeared[0].village_name if sorted_truly_disappeared else None,
                     "villages": [village_to_dict(v) for v in sorted_truly_disappeared]
                 }
                 if min_distance is not None:
@@ -160,6 +161,7 @@ def compare_snapshots(
             
             if pop_change == 0:
                 # Brak przyrostu na żadnej osadzie - nieaktywny
+                sorted_new_villages = villages_sorted_by_distance(new_player_villages)
                 inactive_data = {
                     "player_name": player_name,
                     "alliance": all_old_player_villages[0].alliance_tag if all_old_player_villages else None,
@@ -168,6 +170,7 @@ def compare_snapshots(
                     "new_population": new_total_pop,
                     "total_population": old_total_pop,
                     "pop_change": 0,
+                    "nearest_village_name": sorted_new_villages[0].village_name if sorted_new_villages else None,
                     "villages": [village_to_dict(v) for v in sorted_villages]
                 }
                 if min_distance is not None:

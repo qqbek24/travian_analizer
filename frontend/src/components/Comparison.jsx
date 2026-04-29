@@ -5,7 +5,7 @@ import { Line } from 'react-chartjs-2'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
 
-const API_URL = 'http://localhost:8000'
+const API_URL = '/api'
 
 function Comparison({ snapshots }) {
   const [snapshot1, setSnapshot1] = useState('')
